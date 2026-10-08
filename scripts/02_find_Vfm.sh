@@ -2629,8 +2629,7 @@ if ! step_done "11_exact_Vfm26_search"; then
         touch "${GENOME_DONE}"
 
 
-    done
-
+  done < "${SELECTED_ACCESSIONS}"
 
     mark_done "11_exact_Vfm26_search"
 
@@ -2715,13 +2714,29 @@ with open(reference_file) as fh:
 genomes = ["Dsolani_MK10"]
 
 
-genomes += sorted(
-
-    p.stem
-    for p in
-    (root / "02_genomes").glob("*.fna")
-
+selected_file = (
+    root
+    / "01_NCBI"
+    / "selected_accessions.txt"
 )
+
+
+with open(selected_file) as fh:
+
+    selected_genomes = [
+
+        line.strip()
+
+        for line in fh
+
+        if line.strip()
+
+    ]
+
+
+genomes = [
+    "Dsolani_MK10"
+] + selected_genomes
 
 
 
