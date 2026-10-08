@@ -842,19 +842,19 @@ for FNA in "${GENOME_FILES[@]}"; do
     echo
 
 
-    # Remove incomplete output from an interrupted run.
-
     if [[ -d "${OUT}" ]]; then
 
-        rm -rf "${OUT}"
+    echo "Removing incomplete Bakta output: ${OUT}"
+    rm -rf "${OUT}"
 
-    fi
-
-
-    mkdir -p "${OUT}"
+fi
 
 
-    bakta \
+# IMPORTANT:
+# Do NOT create ${OUT}.
+# Bakta creates its own output directory.
+
+bakta \
         --db "${BAKTA_DB}" \
         --output "${OUT}" \
         --prefix "${ACC}" \
