@@ -2227,3 +2227,1144 @@ else
     echo ">>> STEP 09 already completed — skipping"
 
 fi
+
+
+# ============================================================
+# STEP 10
+# EXTRACT THE EXACT CANONICAL 26 VFM PROTEINS
+# ============================================================
+#
+# Exact mapping from published D. dadantii 3937 Vfm locus:
+#
+# Genomic order:
+#
+# Y K L M N O P Q R S T U V W X J I H G F E D C B Z A
+#
+# Locus:
+#
+# DDA3937_RS20735 through DDA3937_RS20860
+#
+# ============================================================
+
+if ! step_done "10_exact_Vfm26_reference"; then
+
+    echo
+    echo "============================================================"
+    echo "STEP 10: Extracting exact canonical 26 Vfm proteins"
+    echo "============================================================"
+    echo
+
+
+    export DDAD_CDS
+    export QUERY
+    export RESULTS
+
+
+    python <<'PY'
+
+from pathlib import Path
+import os
+import re
+import sys
+
+
+fasta = Path(os.environ["DDAD_CDS"])
+query_dir = Path(os.environ["QUERY"])
+results_dir = Path(os.environ["RESULTS"])
+
+
+# ============================================================
+# EXACT PUBLISHED VFM MAPPING
+# ============================================================
+
+vfm_map = [
+
+    ("vfmY", "DDA3937_RS20735"),
+    ("vfmK", "DDA3937_RS20740"),
+    ("vfmL", "DDA3937_RS20745"),
+    ("vfmM", "DDA3937_RS20750"),
+    ("vfmN", "DDA3937_RS20755"),
+    ("vfmO", "DDA3937_RS20760"),
+    ("vfmP", "DDA3937_RS20765"),
+    ("vfmQ", "DDA3937_RS20770"),
+    ("vfmR", "DDA3937_RS20775"),
+    ("vfmS", "DDA3937_RS20780"),
+    ("vfmT", "DDA3937_RS20785"),
+    ("vfmU", "DDA3937_RS20790"),
+    ("vfmV", "DDA3937_RS20795"),
+    ("vfmW", "DDA3937_RS20800"),
+    ("vfmX", "DDA3937_RS20805"),
+    ("vfmJ", "DDA3937_RS20810"),
+    ("vfmI", "DDA3937_RS20815"),
+    ("vfmH", "DDA3937_RS20820"),
+    ("vfmG", "DDA3937_RS20825"),
+    ("vfmF", "DDA3937_RS20830"),
+    ("vfmE", "DDA3937_RS20835"),
+    ("vfmD", "DDA3937_RS20840"),
+    ("vfmC", "DDA3937_RS20845"),
+    ("vfmB", "DDA3937_RS20850"),
+    ("vfmZ", "DDA3937_RS20855"),
+    ("vfmA", "DDA3937_RS20860"),
+
+]
+
+
+# ============================================================
+# READ FASTA
+# ============================================================
+
+records = []
+
+header = None
+seq = []
+
+
+with open(fasta) as fh:
+
+    for line in fh:
+
+        line = line.rstrip()
+
+
+        if line.startswith(">"):
+
+            if header is not None:
+
+                records.append(
+                    (header, "".join(seq))
+                )
+
+            header = line[1:]
+            seq = []
+
+        else:
+
+            seq.append(line.strip())
+
+
+    if header is not None:
+
+        records.append(
+            (header, "".join(seq))
+        )
+
+
+def field(header, key):
+
+    m = re.search(
+        rf"\[{re.escape(key)}=([^\]]+)\]",
+        header
+    )
+
+    return m.group(1) if m else None
+
+
+def get_location(header):
+
+    text = field(header, "location")
+
+    if not text:
+        return None
+
+
+    nums = [
+        int(x)
+        for x in re.findall(r"\d+", text)
+    ]
+
+
+    if len(nums) < 2:
+        return None
+
+
+    return (
+        min(nums),
+        max(nums),
+        "-" if "complement" in text else "+"
+    )
+
+
+# ============================================================
+# INDEX BY LOCUS TAG
+# ============================================================
+
+by_tag = {}
+
+
+for header, sequence in records:
+
+    tag = field(header, "locus_tag")
+
+    if tag:
+
+        by_tag[tag] = {
+            "header": header,
+            "sequence": sequence,
+            "location": get_location(header),
+            "protein_id": field(header, "protein_id") or "NA",
+        }
+
+
+# ============================================================
+# VERIFY ALL 26
+# ============================================================
+
+missing = [
+
+    tag
+    for gene, tag in vfm_map
+    if tag not in by_tag
+
+]
+
+
+if missing:
+
+    print(
+        "ERROR: Missing Vfm locus tags:",
+        ", ".join(missing),
+        file=sys.stderr
+    )
+
+    sys.exit(1)
+
+
+# ============================================================
+# WRITE EXACT QUERY FASTA
+# ============================================================
+
+query_fasta = (
+    query_dir
+    / "Ddadantii_exact_VfmA_Z_26proteins.faa"
+)
+
+
+reference_table = (
+    results_dir
+    / "Ddadantii_exact_VfmA_Z_reference.tsv"
+)
+
+
+with open(query_fasta, "w") as fa, \
+     open(reference_table, "w") as table:
+
+
+    table.write(
+        "genomic_rank\tgene\tlocus_tag\t"
+        "start\tend\tstrand\t"
+        "protein_length\tprotein_id\n"
+    )
+
+
+    for rank, (gene, tag) in enumerate(
+        vfm_map,
+        start=1
+    ):
+
+        rec = by_tag[tag]
+
+        start, end, strand = rec["location"]
+
+        sequence = rec["sequence"]
+
+
+        fa.write(
+            f">{gene}|{tag}\n"
+        )
+
+
+        for i in range(0, len(sequence), 70):
+
+            fa.write(
+                sequence[i:i+70] + "\n"
+            )
+
+
+        table.write(
+            f"{rank}\t"
+            f"{gene}\t"
+            f"{tag}\t"
+            f"{start}\t"
+            f"{end}\t"
+            f"{strand}\t"
+            f"{len(sequence)}\t"
+            f"{rec['protein_id']}\n"
+        )
+
+
+print()
+print("Successfully extracted all 26 canonical Vfm proteins.")
+print()
+print(f"FASTA: {query_fasta}")
+print(f"Table: {reference_table}")
+print()
+
+PY
+
+
+    N=$(grep -c '^>' \
+"${QUERY}/Ddadantii_exact_VfmA_Z_26proteins.faa")
+
+
+    [[ "${N}" -eq 26 ]] || \
+        die "Expected 26 Vfm proteins; found ${N}"
+
+
+    mark_done "10_exact_Vfm26_reference"
+
+else
+
+    echo
+    echo ">>> STEP 10 already completed — skipping"
+
+fi
+
+
+
+# ============================================================
+# STEP 11
+# SEARCH EXACT VfmA-Z AGAINST D. SOLANI AND ALL ROUXIELLA
+# ============================================================
+
+if ! step_done "11_exact_Vfm26_search"; then
+
+    echo
+    echo "============================================================"
+    echo "STEP 11: Searching exact canonical VfmA-Z"
+    echo "============================================================"
+    echo
+
+
+    VFM_QUERY="${QUERY}/Ddadantii_exact_VfmA_Z_26proteins.faa"
+
+
+    # ========================================================
+    # D. SOLANI POSITIVE CONTROL
+    # ========================================================
+
+    DS_DONE="${STATE}/11_exact_Dsolani_MK10.done"
+
+
+    if [[ ! -f "${DS_DONE}" ]]; then
+
+
+        tblastn \
+            -query "${VFM_QUERY}" \
+            -db "${DB}/Dsolani_MK10/MK10" \
+            -evalue 1e-5 \
+            -max_target_seqs 10 \
+            -max_hsps 1 \
+            -num_threads "${THREADS}" \
+            -outfmt \
+'6 qseqid sseqid pident length qlen qcovhsp sstart send evalue bitscore' \
+            > "${RAW}/EXACT_VfmA_Z_vs_Dsolani_MK10.tsv"
+
+
+        touch "${DS_DONE}"
+
+    fi
+
+
+    # ========================================================
+    # ALL R. BADENSIS GENOMES
+    # ========================================================
+
+    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
+
+
+    for FNA in "${RB_GENOMES[@]}"; do
+
+
+        ACC="$(basename "${FNA}" .fna)"
+
+
+        GENOME_DONE="${STATE}/11_exact_${ACC}.done"
+
+
+        if [[ -f "${GENOME_DONE}" ]]; then
+
+            echo "${ACC}: exact Vfm search done — skipping"
+
+            continue
+
+        fi
+
+
+        echo
+        echo "Searching exact VfmA-Z in ${ACC}"
+
+
+        tblastn \
+            -query "${VFM_QUERY}" \
+            -db "${DB}/${ACC}/${ACC}" \
+            -evalue 1e-5 \
+            -max_target_seqs 10 \
+            -max_hsps 1 \
+            -num_threads "${THREADS}" \
+            -outfmt \
+'6 qseqid sseqid pident length qlen qcovhsp sstart send evalue bitscore' \
+            > "${RAW}/EXACT_VfmA_Z_vs_${ACC}.tsv"
+
+
+        touch "${GENOME_DONE}"
+
+
+    done
+
+
+    mark_done "11_exact_Vfm26_search"
+
+else
+
+    echo
+    echo ">>> STEP 11 already completed — skipping"
+
+fi
+
+
+
+# ============================================================
+# STEP 12
+# EXACT VFM PRESENCE / ABSENCE + SYNTENY
+# ============================================================
+
+if ! step_done "12_exact_Vfm26_summary"; then
+
+    echo
+    echo "============================================================"
+    echo "STEP 12: Exact VfmA-Z conservation analysis"
+    echo "============================================================"
+    echo
+
+
+    export ROOT
+    export RAW
+    export RESULTS
+    export RB_PRIMARY
+
+
+    python <<'PY'
+
+from pathlib import Path
+from collections import defaultdict
+import os
+
+
+root = Path(os.environ["ROOT"])
+raw = Path(os.environ["RAW"])
+results = Path(os.environ["RESULTS"])
+
+primary = os.environ["RB_PRIMARY"]
+
+
+# ============================================================
+# REFERENCE ORDER
+# ============================================================
+
+reference_file = (
+    results
+    / "Ddadantii_exact_VfmA_Z_reference.tsv"
+)
+
+
+reference_order = []
+reference_rank = {}
+
+
+with open(reference_file) as fh:
+
+    next(fh)
+
+    for line in fh:
+
+        p = line.rstrip().split("\t")
+
+        rank = int(p[0])
+        gene = p[1]
+
+        reference_order.append(gene)
+
+        reference_rank[gene] = rank
+
+
+
+# ============================================================
+# GENOMES
+# ============================================================
+
+genomes = ["Dsolani_MK10"]
+
+
+genomes += sorted(
+
+    p.stem
+    for p in
+    (root / "02_genomes").glob("*.fna")
+
+)
+
+
+
+# ============================================================
+# HOMOLOGY CLASSIFICATION
+# ============================================================
+#
+# HIGH:
+#   >=40% identity
+#   >=75% query coverage
+#   E <= 1e-20
+#
+# CANDIDATE:
+#   >=30% identity
+#   >=60% query coverage
+#   E <= 1e-10
+#
+# WEAK:
+#   detectable, but below candidate threshold
+#
+# ABSENT:
+#   no detectable hit
+#
+# Synteny is evaluated separately and is essential because
+# several Vfm proteins belong to widespread protein families.
+#
+# ============================================================
+
+def classify(identity, qcov, evalue):
+
+    if (
+        identity >= 40
+        and qcov >= 75
+        and evalue <= 1e-20
+    ):
+
+        return "HIGH"
+
+
+    if (
+        identity >= 30
+        and qcov >= 60
+        and evalue <= 1e-10
+    ):
+
+        return "CANDIDATE"
+
+
+    return "WEAK"
+
+
+
+# ============================================================
+# READ BEST HIT PER VFM QUERY
+# ============================================================
+
+def read_best(path):
+
+    best = {}
+
+
+    if not path.exists():
+
+        return best
+
+
+    with open(path) as fh:
+
+        for line in fh:
+
+            if not line.strip():
+                continue
+
+
+            p = line.rstrip().split("\t")
+
+
+            gene = p[0].split("|")[0]
+
+
+            rec = {
+
+                "gene": gene,
+                "contig": p[1],
+                "identity": float(p[2]),
+                "alignment_length": int(p[3]),
+                "qlen": int(p[4]),
+                "qcov": float(p[5]),
+                "sstart": int(p[6]),
+                "send": int(p[7]),
+                "evalue": float(p[8]),
+                "bitscore": float(p[9]),
+
+            }
+
+
+            if (
+                gene not in best
+                or rec["bitscore"] > best[gene]["bitscore"]
+            ):
+
+                best[gene] = rec
+
+
+    return best
+
+
+
+# ============================================================
+# ORDER CONCORDANCE
+#
+# Allows the entire locus to occur in either forward or
+# reverse orientation.
+#
+# ============================================================
+
+def order_concordance(genes):
+
+    if len(genes) < 2:
+        return None
+
+
+    ranks = [
+        reference_rank[g]
+        for g in genes
+    ]
+
+
+    forward = 0
+    reverse = 0
+
+
+    for i in range(len(ranks)):
+
+        for j in range(i + 1, len(ranks)):
+
+            if ranks[i] < ranks[j]:
+                forward += 1
+
+            elif ranks[i] > ranks[j]:
+                reverse += 1
+
+
+    total = forward + reverse
+
+
+    if total == 0:
+        return None
+
+
+    return max(
+        forward / total,
+        reverse / total
+    )
+
+
+
+# ============================================================
+# ANALYSIS
+# ============================================================
+
+long_rows = []
+summary_rows = []
+matrix = {}
+
+
+for genome in genomes:
+
+
+    if genome == "Dsolani_MK10":
+
+        infile = (
+            raw
+            / "EXACT_VfmA_Z_vs_Dsolani_MK10.tsv"
+        )
+
+    else:
+
+        infile = (
+            raw
+            / f"EXACT_VfmA_Z_vs_{genome}.tsv"
+        )
+
+
+    best = read_best(infile)
+
+    matrix[genome] = {}
+
+
+    accepted_by_contig = defaultdict(list)
+
+
+    counts = {
+        "HIGH": 0,
+        "CANDIDATE": 0,
+        "WEAK": 0,
+        "ABSENT": 0,
+    }
+
+
+    for gene in reference_order:
+
+
+        if gene not in best:
+
+            status = "ABSENT"
+
+            counts[status] += 1
+
+            matrix[genome][gene] = status
+
+
+            long_rows.append({
+
+                "genome": genome,
+                "gene": gene,
+                "contig": "NA",
+                "identity": 0,
+                "qcov": 0,
+                "start": 0,
+                "end": 0,
+                "strand": "NA",
+                "evalue": 1,
+                "bitscore": 0,
+                "status": status,
+
+            })
+
+
+            continue
+
+
+        rec = best[gene]
+
+
+        status = classify(
+            rec["identity"],
+            rec["qcov"],
+            rec["evalue"]
+        )
+
+
+        counts[status] += 1
+
+        matrix[genome][gene] = status
+
+
+        start = min(
+            rec["sstart"],
+            rec["send"]
+        )
+
+        end = max(
+            rec["sstart"],
+            rec["send"]
+        )
+
+
+        strand = (
+            "+"
+            if rec["sstart"] <= rec["send"]
+            else "-"
+        )
+
+
+        row = {
+
+            "genome": genome,
+            "gene": gene,
+            "contig": rec["contig"],
+            "identity": rec["identity"],
+            "qcov": rec["qcov"],
+            "start": start,
+            "end": end,
+            "strand": strand,
+            "evalue": rec["evalue"],
+            "bitscore": rec["bitscore"],
+            "status": status,
+
+        }
+
+
+        long_rows.append(row)
+
+
+        if status in {
+            "HIGH",
+            "CANDIDATE",
+        }:
+
+            accepted_by_contig[
+                rec["contig"]
+            ].append(row)
+
+
+
+    accepted_total = (
+        counts["HIGH"]
+        + counts["CANDIDATE"]
+    )
+
+
+    # ========================================================
+    # FIND CONTIG WITH MOST VFM-LIKE GENES
+    # ========================================================
+
+    top_contig = "NA"
+    top_hits = []
+
+    top_span = "NA"
+    synteny = "NA"
+
+
+    if accepted_by_contig:
+
+
+        top_contig, top_hits = max(
+
+            accepted_by_contig.items(),
+
+            key=lambda x: len(x[1])
+
+        )
+
+
+        ordered_hits = sorted(
+
+            top_hits,
+
+            key=lambda x: x["start"]
+
+        )
+
+
+        starts = [
+            x["start"]
+            for x in ordered_hits
+        ]
+
+        ends = [
+            x["end"]
+            for x in ordered_hits
+        ]
+
+
+        top_span = (
+            max(ends)
+            - min(starts)
+            + 1
+        )
+
+
+        target_gene_order = [
+            x["gene"]
+            for x in ordered_hits
+        ]
+
+
+        score = order_concordance(
+            target_gene_order
+        )
+
+
+        if score is not None:
+
+            synteny = round(
+                score,
+                3
+            )
+
+
+
+    # ========================================================
+    # REGULATORY CORE CHECK
+    # ========================================================
+
+    top_genes = {
+        x["gene"]
+        for x in top_hits
+    }
+
+
+    EHI_same_locus = all(
+
+        x in top_genes
+        for x in (
+            "vfmE",
+            "vfmH",
+            "vfmI",
+        )
+
+    )
+
+
+
+    # ========================================================
+    # CONSERVATIVE COHERENT-LOCUS CALL
+    #
+    # Require:
+    #
+    #   >=20 accepted Vfm proteins overall
+    #   >=20 accepted proteins on one contig
+    #   E/H/I all on that same contig
+    #   locus span <=45 kb
+    #   order concordance >=0.80
+    #
+    # Canonical D. dadantii locus itself is ~27 kb.
+    #
+    # ========================================================
+
+    coherent = False
+
+
+    if (
+        accepted_total >= 20
+        and len(top_hits) >= 20
+        and EHI_same_locus
+        and top_span != "NA"
+        and top_span <= 45000
+        and synteny != "NA"
+        and synteny >= 0.80
+    ):
+
+        coherent = True
+
+
+
+    summary_rows.append({
+
+        "genome": genome,
+        "HIGH": counts["HIGH"],
+        "CANDIDATE": counts["CANDIDATE"],
+        "WEAK": counts["WEAK"],
+        "ABSENT": counts["ABSENT"],
+        "accepted_total": accepted_total,
+        "top_contig": top_contig,
+        "top_count": len(top_hits),
+        "top_span": top_span,
+        "synteny": synteny,
+        "EHI_same_locus": EHI_same_locus,
+        "coherent": coherent,
+
+    })
+
+
+
+# ============================================================
+# LONG TABLE
+# ============================================================
+
+long_file = (
+    results
+    / "EXACT_VfmA_Z_best_hits_all_genomes.tsv"
+)
+
+
+with open(long_file, "w") as out:
+
+
+    out.write(
+        "genome\tgene\ttarget_contig\t"
+        "identity_pct\tquery_coverage_pct\t"
+        "start\tend\tstrand\t"
+        "evalue\tbitscore\tclassification\n"
+    )
+
+
+    for r in long_rows:
+
+
+        out.write(
+            f"{r['genome']}\t"
+            f"{r['gene']}\t"
+            f"{r['contig']}\t"
+            f"{r['identity']:.2f}\t"
+            f"{r['qcov']:.1f}\t"
+            f"{r['start']}\t"
+            f"{r['end']}\t"
+            f"{r['strand']}\t"
+            f"{r['evalue']:.3g}\t"
+            f"{r['bitscore']:.1f}\t"
+            f"{r['status']}\n"
+        )
+
+
+
+# ============================================================
+# PRESENCE MATRIX
+# ============================================================
+
+matrix_file = (
+    results
+    / "EXACT_VfmA_Z_presence_matrix.tsv"
+)
+
+
+with open(matrix_file, "w") as out:
+
+
+    out.write(
+        "genome\t"
+        + "\t".join(reference_order)
+        + "\n"
+    )
+
+
+    for genome in genomes:
+
+
+        out.write(
+            genome
+            + "\t"
+            + "\t".join(
+                matrix[genome][gene]
+                for gene in reference_order
+            )
+            + "\n"
+        )
+
+
+
+# ============================================================
+# CLUSTER SUMMARY
+# ============================================================
+
+summary_file = (
+    results
+    / "EXACT_VfmA_Z_cluster_summary.tsv"
+)
+
+
+with open(summary_file, "w") as out:
+
+
+    out.write(
+        "genome\tHIGH\tCANDIDATE\tWEAK\tABSENT\t"
+        "accepted_total\t"
+        "top_contig\t"
+        "accepted_on_top_contig\t"
+        "top_contig_span_bp\t"
+        "gene_order_concordance\t"
+        "VfmEHI_same_locus\t"
+        "coherent_Vfm_locus\n"
+    )
+
+
+    for r in summary_rows:
+
+
+        out.write(
+            f"{r['genome']}\t"
+            f"{r['HIGH']}\t"
+            f"{r['CANDIDATE']}\t"
+            f"{r['WEAK']}\t"
+            f"{r['ABSENT']}\t"
+            f"{r['accepted_total']}\t"
+            f"{r['top_contig']}\t"
+            f"{r['top_count']}\t"
+            f"{r['top_span']}\t"
+            f"{r['synteny']}\t"
+            f"{r['EHI_same_locus']}\t"
+            f"{r['coherent']}\n"
+        )
+
+
+
+# ============================================================
+# 20GA0316 ONLY
+# ============================================================
+
+primary_file = (
+    results
+    / "EXACT_20GA0316_VfmA_Z.tsv"
+)
+
+
+with open(primary_file, "w") as out:
+
+
+    out.write(
+        "gene\ttarget_contig\t"
+        "identity_pct\tquery_coverage_pct\t"
+        "start\tend\tstrand\t"
+        "evalue\tbitscore\tclassification\n"
+    )
+
+
+    for r in long_rows:
+
+
+        if r["genome"] != primary:
+            continue
+
+
+        out.write(
+            f"{r['gene']}\t"
+            f"{r['contig']}\t"
+            f"{r['identity']:.2f}\t"
+            f"{r['qcov']:.1f}\t"
+            f"{r['start']}\t"
+            f"{r['end']}\t"
+            f"{r['strand']}\t"
+            f"{r['evalue']:.3g}\t"
+            f"{r['bitscore']:.1f}\t"
+            f"{r['status']}\n"
+        )
+
+
+
+# ============================================================
+# D. SOLANI ONLY
+# ============================================================
+
+ds_file = (
+    results
+    / "EXACT_Dsolani_MK10_VfmA_Z.tsv"
+)
+
+
+with open(ds_file, "w") as out:
+
+
+    out.write(
+        "gene\ttarget_contig\t"
+        "identity_pct\tquery_coverage_pct\t"
+        "start\tend\tstrand\t"
+        "evalue\tbitscore\tclassification\n"
+    )
+
+
+    for r in long_rows:
+
+
+        if r["genome"] != "Dsolani_MK10":
+            continue
+
+
+        out.write(
+            f"{r['gene']}\t"
+            f"{r['contig']}\t"
+            f"{r['identity']:.2f}\t"
+            f"{r['qcov']:.1f}\t"
+            f"{r['start']}\t"
+            f"{r['end']}\t"
+            f"{r['strand']}\t"
+            f"{r['evalue']:.3g}\t"
+            f"{r['bitscore']:.1f}\t"
+            f"{r['status']}\n"
+        )
+
+
+print()
+print("Exact 26-gene Vfm analysis complete.")
+print()
+
+PY
+
+
+    mark_done "12_exact_Vfm26_summary"
+
+else
+
+    echo
+    echo ">>> STEP 12 already completed — skipping"
+
+fi
