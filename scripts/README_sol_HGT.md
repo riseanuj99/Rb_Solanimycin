@@ -46,7 +46,7 @@ sbatch scripts/03_sol_HGT_phylogeny.sh
 
 All under `/scratch/al98750/Roux/07_sol_HGT/`:
 
-- `05_results/genome_manifest.tsv`: 17 local *R. badensis* assemblies plus up to three additional assemblies per other *Rouxiella* species and published *sol*-positive genera.
+- `05_results/genome_manifest.tsv`: all local *R. badensis* assemblies (currently 18, including C173) plus up to three additional assemblies per other *Rouxiella* species and published *sol*-positive genera.
 - `02_reference/sol_reference.json`: validated original locus tags `LLR01_11590` through `LLR01_11530` and exact contig boundaries.
 - `05_results/sol_loci.tsv`, `sol_gene_matrix.tsv`, `sol_gene_hits.tsv`: candidate *sol* presence/absence, hits and coordinates.
 - `06_neighborhoods/*_sol_25kb.gb`: 25-kb flanks around detected *sol* clusters, with CDS translations for Clinker.
@@ -71,3 +71,13 @@ The *sol* calls are initial homology/synteny candidates. For a manuscript, inspe
 ## Checkpoints
 
 `07_sol_HGT/.state/*.done` plus per-genome Prodigal/BLAST markers. Successful stages skip on resubmission. Do not delete checkpoint files unless you are deliberately invalidating upstream inputs. If you change reference queries or genome selection, invalidate dependent stages before rerunning.
+
+## IQ-TREE executable compatibility
+
+Conda may install `iqtree3` instead of `iqtree2`. This updated version auto-detects `iqtree2`, `iqtree3`, or `iqtree` when running phylogenies. Verify with `command -v iqtree3` or `command -v iqtree2`; no reinstall is needed if one is present.
+
+## v3 fix (October 2026)
+
+The original NCBI genus discovery piped the default JSON envelope from `datasets summary genome taxon Rouxiella` into `dataformat tsv genome`, causing `unknown field "reports"`. Version 3 retrieves `--as-json-lines` and parses the assembly records in Python, saving the raw inventory to `07_sol_HGT/tmp/rouxiella_ncbi.jsonl`.
+
+For the failed job `48873785`, the `01_genomes` checkpoint was not created, so after replacing the script, rerun discovery normally. No checkpoint deletion or redownload of the 18 local genomes is needed.

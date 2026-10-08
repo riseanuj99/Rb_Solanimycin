@@ -31,6 +31,14 @@ EXTRA = {'GCA_000365285.1':'Dickeya solani MK10',
          'GCA_900068895':'Erwinia sp. ErVv1'}
 
 
+def iqtree_executable():
+    # IQ-TREE 2 and IQ-TREE 3 use different executable names in Conda builds.
+    for candidate in ('iqtree2', 'iqtree3', 'iqtree'):
+        if shutil.which(candidate):
+            return candidate
+    raise RuntimeError('IQ-TREE executable not found: expected iqtree2, iqtree3, or iqtree')
+
+
 def run(cmd, stdout=None, cwd=None):
     print('+', ' '.join(map(str,cmd)), flush=True)
     subprocess.run([str(x) for x in cmd], check=True, stdout=stdout, cwd=cwd)
@@ -94,20 +102,52 @@ def discover_genomes(root,work):
             rows.append({'accession':acc,'organism':'Rouxiella badensis','source':'existing_Roux'})
             selected.add(acc)
     if PRIMARY not in selected: raise RuntimeError(f'Missing primary genome: {root}/02_genomes/{PRIMARY}.fna')
-    # Retrieve Rouxiella genus; keep up to three additional genomes per non-badensis species.
-    tsv=work/'tmp'/'rouxiella_ncbi.tsv'
-    if not tsv.exists() or tsv.stat().st_size==0:
-        p1=subprocess.Popen(['datasets','summary','genome','taxon','Rouxiella'],stdout=subprocess.PIPE)
-        with tsv.open('w') as o:
-            p2=subprocess.run(['dataformat','tsv','genome','--fields','accession,organism-name'],stdin=p1.stdout,stdout=o)
-        p1.stdout.close(); p1.wait()
-        if p1.returncode or p2.returncode: raise RuntimeError('NCBI Rouxiella genus discovery failed')
+    # Retrieve genus-level NCBI assembly reports as JSON Lines. NCBI Datasets
+    # emits a {"reports": [...]} envelope by default, which is NOT compatible
+    # with dataformat tsv genome. --as-json-lines avoids that mismatch and
+    # parsing here avoids depending on dataformat's version-specific fields.
+    raw=work/'tmp'/'rouxiella_ncbi.jsonl'
+    if not raw.exists() or raw.stat().st_size==0:
+        temp=work/'tmp'/'rouxiella_ncbi.jsonl.partial'
+        with temp.open('w') as out:
+            run(['datasets','summary','genome','taxon','Rouxiella',
+                 '--assembly-source','all','--as-json-lines'],stdout=out)
+        if temp.stat().st_size==0:
+            raise RuntimeError('NCBI Rouxiella genome summary returned an empty response')
+        temp.replace(raw)
     by_species=defaultdict(list)
-    for r in read_tsv(tsv):
-        acc=r.get('Assembly Accession') or r.get('accession') or next((v for v in r.values() if re.match(r'^GC[AF]_',v)),None)
-        name=r.get('Organism Name') or r.get('organism-name') or next((v for v in r.values() if 'Rouxiella ' in v),'')
-        if not acc or not name.startswith('Rouxiella '): continue
-        species=' '.join(name.split()[:2]); by_species[species].append((acc,name))
+    count=0
+    for line_number,line in enumerate(raw.read_text().splitlines(),1):
+        if not line.strip():
+            continue
+        try:
+            obj=json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f'Invalid NCBI JSON at {raw}:{line_number}: {exc}') from exc
+        if not isinstance(obj,dict):
+            continue
+        reports=obj.get('reports',[obj])
+        if not isinstance(reports,list):
+            raise RuntimeError(f'Unexpected NCBI report structure at line {line_number}')
+        for report in reports:
+            if not isinstance(report,dict):
+                continue
+            acc=report.get('accession')
+            org=report.get('organism') or {}
+            name=(org.get('organism_name') or org.get('scientific_name') or '') if isinstance(org,dict) else str(org)
+            if not name:
+                name=report.get('organism_name','')
+            if not isinstance(acc,str) or not re.fullmatch(r'GC[AF]_\d+\.\d+',acc):
+                continue
+            if not name.startswith('Rouxiella '):
+                continue
+            species=' '.join(name.split()[:2])
+            by_species[species].append((acc,name))
+            count+=1
+    print(f'NCBI Rouxiella discovery: {count} matching assembly records, '
+          f'{len(by_species)} species labels',flush=True)
+    if not by_species:
+        raise RuntimeError(f'No usable Rouxiella assemblies parsed from {raw}; inspect the NCBI JSON')
     for species, candidates in sorted(by_species.items()):
         if species=='Rouxiella badensis': continue
         # De-duplicate GCA/GCF paired assemblies by numeric accession; prefer RefSeq.
@@ -592,7 +632,7 @@ def phylo_species(work,threads):
               [dict(gene=x,start=y,end=z) for x,y,z in partitions],['gene','start','end'])
     print(f'Core alignment: {len(partitions)} orthogroups, {pos-1} aa sites')
     if pos-1<10000:raise RuntimeError('Too few conserved positions for species tree')
-    run(['iqtree2','-s',target,'-m','LG+F+G4','-B','1000','-T',str(threads),
+    run([iqtree_executable(),'-s',target,'-m','LG+F+G4','-B','1000','-T',str(threads),
          '--prefix',work/'07_phylogeny'/'species_core'])
 
 
@@ -628,7 +668,7 @@ def phylo_sol(work,threads):
               [dict(gene=g,start=s,end=e) for g,s,e in parts],['gene','start','end'])
     (work/'07_phylogeny'/'sol_tree_taxa.txt').write_text('\n'.join(eligible)+'\n')
     print(f'Sol alignment: {len(parts)} genes, {pos-1} aa sites, {len(eligible)} taxa')
-    run(['iqtree2','-s',target,'-m','LG+F+G4','-B','1000','-T',str(threads),
+    run([iqtree_executable(),'-s',target,'-m','LG+F+G4','-B','1000','-T',str(threads),
          '--prefix',work/'07_phylogeny'/'sol_cluster'])
 
 
@@ -646,7 +686,7 @@ def phylo_gene_trees(work,threads):
             continue
         prefix=d/f'{gene}_ML'
         if not Path(str(prefix)+'.treefile').exists():
-            run(['iqtree2','-s',aligned,'-m','LG+F+G4','-B','1000','-T',str(threads),'--prefix',prefix])
+            run([iqtree_executable(),'-s',aligned,'-m','LG+F+G4','-B','1000','-T',str(threads),'--prefix',prefix])
         rows.append(dict(gene=gene,taxa=len(records),sites=length,status='tree_inferred'))
     write_tsv(work/'07_phylogeny'/'individual_sol_gene_trees.tsv',rows,
               ['gene','taxa','sites','status'])
@@ -678,7 +718,7 @@ def compare_trees(work,threads):
     with (d/'topology_candidates.nwk').open('w') as f:
         f.write((d/'sol_cluster.treefile').read_text().strip()+'\n')
         f.write((d/'species_pruned_to_sol_taxa.nwk').read_text().strip()+'\n')
-    run(['iqtree2','-s',d/'sol_concat.fa','-m','LG+F+G4','-z',d/'topology_candidates.nwk',
+    run([iqtree_executable(),'-s',d/'sol_concat.fa','-m','LG+F+G4','-z',d/'topology_candidates.nwk',
          '-n','0','-zb','1000','-au','-T',str(threads),'--prefix',d/'topology_AU_test'])
     print('Tree comparison:',result)
 
