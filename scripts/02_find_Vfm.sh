@@ -1917,19 +1917,21 @@ echo
 
 # ============================================================
 # STEP 09
-# EXTRACT THE ACTUAL CANONICAL VfmA-VfmZ PROTEINS
+# MAP THE TRUE D. DADANTII VFM LOCUS AROUND VfmI/H/E
 # ============================================================
 #
-# Goal:
+# Current RefSeq CDS headers do not necessarily contain
+# historical vfmA-vfmZ gene aliases.
 #
-# Extract only the 26 named Vfm proteins:
+# Therefore:
 #
-#   VfmA, VfmB, ... VfmZ
+#   1. Parse all D. dadantii CDS proteins
+#   2. Sort them by genomic coordinate
+#   3. Locate the known VfmI/H/E anchors
+#   4. Export a wide local neighborhood for inspection
 #
-# from D. dadantii 3937 (NC_014500.1).
-#
-# This replaces the earlier broad +/-20-kb neighborhood
-# analysis with a gene-specific Vfm presence/absence test.
+# We will define the exact canonical 26 CDS from this table,
+# rather than guessing the locus boundaries.
 #
 # ============================================================
 
@@ -1937,14 +1939,14 @@ if ! step_done "09_extract_VfmA_Z"; then
 
     echo
     echo "============================================================"
-    echo "STEP 09: Extracting canonical VfmA-VfmZ proteins"
+    echo "STEP 09: Mapping canonical Vfm locus around VfmE/H/I"
     echo "============================================================"
     echo
 
 
     export DDAD_CDS
-    export QUERY
     export RESULTS
+    export QUERY
 
 
     python <<'PY'
@@ -1952,211 +1954,154 @@ if ! step_done "09_extract_VfmA_Z"; then
 from pathlib import Path
 import os
 import re
-import string
 import sys
 
 
 fasta = Path(os.environ["DDAD_CDS"])
-
-query_dir = Path(os.environ["QUERY"])
-
-results_dir = Path(os.environ["RESULTS"])
+results = Path(os.environ["RESULTS"])
+query = Path(os.environ["QUERY"])
 
 
-expected = [
-    f"vfm{x}"
-    for x in string.ascii_uppercase
-]
+ANCHORS = {
+    "vfmI": "DDA3937_RS20815",
+    "vfmH": "DDA3937_RS20820",
+    "vfmE": "DDA3937_RS20835",
+}
 
 
 # ============================================================
 # FASTA PARSER
 # ============================================================
 
-def read_fasta(path):
+records = []
 
-    records = []
-
-    header = None
-    seq = []
+header = None
+seq = []
 
 
-    with open(path) as handle:
+with open(fasta) as fh:
 
-        for line in handle:
+    for line in fh:
 
-            line = line.rstrip()
+        line = line.rstrip()
 
+        if line.startswith(">"):
 
-            if line.startswith(">"):
+            if header is not None:
+                records.append((header, "".join(seq)))
 
-                if header is not None:
+            header = line[1:]
+            seq = []
 
-                    records.append(
-                        (header, "".join(seq))
-                    )
-
-
-                header = line[1:]
-                seq = []
+        else:
+            seq.append(line.strip())
 
 
-            else:
-
-                seq.append(line.strip())
-
-
-        if header is not None:
-
-            records.append(
-                (header, "".join(seq))
-            )
-
-
-    return records
-
-
-
-records = read_fasta(fasta)
+    if header is not None:
+        records.append((header, "".join(seq)))
 
 
 
 # ============================================================
-# EXTRACT GENE / LOCUS TAG / LOCATION FROM NCBI HEADERS
+# HEADER FIELD EXTRACTION
 # ============================================================
 
 def field(header, key):
 
     m = re.search(
         rf"\[{re.escape(key)}=([^\]]+)\]",
-        header,
-        flags=re.I,
+        header
     )
 
     return m.group(1) if m else None
 
 
 
-def coords(header):
+def location(header):
 
-    location = field(header, "location")
+    text = field(header, "location")
 
-
-    if not location:
-
+    if not text:
         return None
 
 
     nums = [
         int(x)
-        for x in re.findall(r"\d+", location)
+        for x in re.findall(r"\d+", text)
     ]
 
 
     if len(nums) < 2:
-
         return None
 
 
-    return min(nums), max(nums)
+    start = min(nums)
+    end = max(nums)
+
+    strand = "-" if "complement" in text else "+"
+
+    return start, end, strand
 
 
 
-found = {}
+# ============================================================
+# BUILD ORDERED CDS TABLE
+# ============================================================
+
+cds = []
 
 
-for header, seq in records:
+for header, sequence in records:
 
-    gene = field(header, "gene")
+    tag = field(header, "locus_tag")
+    loc = location(header)
 
-
-    if gene is None:
-
+    if tag is None or loc is None:
         continue
 
 
-    gene = gene.lower()
+    start, end, strand = loc
 
 
-    if gene in expected:
+    cds.append({
+        "tag": tag,
+        "start": start,
+        "end": end,
+        "strand": strand,
+        "product": field(header, "protein") or
+                   field(header, "product") or "NA",
+        "protein_id": field(header, "protein_id") or "NA",
+        "sequence": sequence,
+        "header": header,
+    })
 
-        found[gene] = {
 
-            "header": header,
-
-            "sequence": seq,
-
-            "locus_tag": (
-                field(header, "locus_tag")
-                or "NA"
-            ),
-
-            "coords": coords(header),
-
-        }
+cds.sort(key=lambda x: x["start"])
 
 
 
 # ============================================================
-# REPORT WHAT NCBI ACTUALLY CONTAINS
+# FIND ANCHOR INDICES
 # ============================================================
 
-debug = results_dir / "Ddadantii_VfmA_Z_extraction_QC.txt"
-
-
-with open(debug, "w") as out:
-
-    out.write(
-        f"Expected genes: {len(expected)}\n"
-    )
-
-    out.write(
-        f"Found genes: {len(found)}\n\n"
-    )
-
-
-    for gene in expected:
-
-        if gene in found:
-
-            rec = found[gene]
-
-            out.write(
-                f"{gene}\t"
-                f"{rec['locus_tag']}\t"
-                f"{len(rec['sequence'])} aa\n"
-            )
-
-        else:
-
-            out.write(
-                f"{gene}\tMISSING\n"
-            )
-
+tag_to_index = {
+    rec["tag"]: i
+    for i, rec in enumerate(cds)
+}
 
 
 missing = [
-    gene
-    for gene in expected
-    if gene not in found
+    tag
+    for tag in ANCHORS.values()
+    if tag not in tag_to_index
 ]
 
 
 if missing:
 
     print(
-        "ERROR: Could not recover all 26 named Vfm proteins.",
-        file=sys.stderr,
-    )
-
-    print(
-        "Missing:",
+        "ERROR: Missing Vfm anchors:",
         ", ".join(missing),
-        file=sys.stderr,
-    )
-
-    print(
-        f"See: {debug}",
         file=sys.stderr,
     )
 
@@ -2164,132 +2109,114 @@ if missing:
 
 
 
-# ============================================================
-# DETERMINE TRUE REFERENCE ORDER FROM GENOMIC COORDINATES
-#
-# Do NOT assume alphabetical order = genomic order.
-# ============================================================
+anchor_indices = [
+    tag_to_index[tag]
+    for tag in ANCHORS.values()
+]
 
-ordered = sorted(
 
-    found.items(),
+left = max(
+    0,
+    min(anchor_indices) - 20
+)
 
-    key=lambda x: (
-        x[1]["coords"][0]
-        if x[1]["coords"] is not None
-        else 10**20
-    )
-
+right = min(
+    len(cds),
+    max(anchor_indices) + 21
 )
 
 
+window = cds[left:right]
+
+
 
 # ============================================================
-# WRITE 26-PROTEIN QUERY FASTA
+# WRITE LOCAL LOCUS TABLE
 # ============================================================
 
-out_fasta = (
-    query_dir
-    / "Ddadantii_VfmA_Z_26proteins.faa"
+outfile = (
+    results
+    / "Ddadantii_Vfm_anchor_neighborhood.tsv"
 )
 
 
-with open(out_fasta, "w") as out:
-
-    for gene, rec in ordered:
-
-        out.write(
-            f">{gene}|{rec['locus_tag']}|Ddadantii3937\n"
-        )
-
-
-        seq = rec["sequence"]
-
-
-        for i in range(0, len(seq), 70):
-
-            out.write(
-                seq[i:i+70] + "\n"
-            )
-
-
-
-# ============================================================
-# WRITE REFERENCE TABLE
-# ============================================================
-
-reference_table = (
-    results_dir
-    / "Ddadantii_VfmA_Z_reference.tsv"
-)
-
-
-with open(reference_table, "w") as out:
+with open(outfile, "w") as out:
 
     out.write(
-        "reference_rank\tgene\tlocus_tag\t"
-        "start\tend\tprotein_length\n"
+        "local_rank\tlocus_tag\tstart\tend\tstrand\t"
+        "protein_length\tanchor\tproduct\tprotein_id\n"
     )
 
 
-    for rank, (gene, rec) in enumerate(
-        ordered,
-        start=1,
-    ):
+    for rank, rec in enumerate(window, start=1):
 
-        start, end = rec["coords"]
+        anchor = "."
+
+        for gene, tag in ANCHORS.items():
+
+            if rec["tag"] == tag:
+                anchor = gene
 
 
         out.write(
             f"{rank}\t"
-            f"{gene}\t"
-            f"{rec['locus_tag']}\t"
-            f"{start}\t"
-            f"{end}\t"
-            f"{len(rec['sequence'])}\n"
+            f"{rec['tag']}\t"
+            f"{rec['start']}\t"
+            f"{rec['end']}\t"
+            f"{rec['strand']}\t"
+            f"{len(rec['sequence'])}\t"
+            f"{anchor}\t"
+            f"{rec['product']}\t"
+            f"{rec['protein_id']}\n"
         )
 
 
 
+# ============================================================
+# ALSO WRITE FASTA FOR THE WHOLE LOCAL WINDOW
+# ============================================================
+
+window_fasta = (
+    query
+    / "Ddadantii_Vfm_anchor_neighborhood.faa"
+)
+
+
+with open(window_fasta, "w") as out:
+
+    for rec in window:
+
+        out.write(
+            f">{rec['tag']} "
+            f"{rec['start']}-{rec['end']} "
+            f"{rec['product']}\n"
+        )
+
+
+        s = rec["sequence"]
+
+        for i in range(0, len(s), 70):
+            out.write(s[i:i+70] + "\n")
+
+
+
 print()
-print("Successfully extracted all 26 Vfm proteins.")
+print("Vfm anchor neighborhood extracted.")
 print()
-
-print("Reference genomic order:")
-
-for rank, (gene, rec) in enumerate(
-    ordered,
-    start=1,
-):
-
-    print(
-        rank,
-        gene,
-        rec["locus_tag"],
-        rec["coords"],
-    )
+print(f"VfmI index: {tag_to_index[ANCHORS['vfmI']]}")
+print(f"VfmH index: {tag_to_index[ANCHORS['vfmH']]}")
+print(f"VfmE index: {tag_to_index[ANCHORS['vfmE']]}")
+print()
+print(f"Neighborhood CDS count: {len(window)}")
+print()
+print(f"Output: {outfile}")
 
 PY
 
 
     [[ -s \
-"${QUERY}/Ddadantii_VfmA_Z_26proteins.faa" ]] || \
-        die "Canonical 26-protein Vfm FASTA was not produced."
-
-
-    N_VFM=$(
-
-        grep -c '^>' \
-"${QUERY}/Ddadantii_VfmA_Z_26proteins.faa"
-
-    )
-
-
-    if [[ "${N_VFM}" -ne 26 ]]; then
-
-        die "Expected 26 Vfm proteins but obtained ${N_VFM}."
-
-    fi
+"${RESULTS}/Ddadantii_Vfm_anchor_neighborhood.tsv" ]] || \
+        die "Vfm neighborhood table was not generated."
 
 
     mark_done "09_extract_VfmA_Z"
@@ -2298,1020 +2225,5 @@ else
 
     echo
     echo ">>> STEP 09 already completed — skipping"
-
-fi
-
-
-
-# ============================================================
-# STEP 10
-# SEARCH ALL 26 VFM PROTEINS
-# ============================================================
-#
-# Search:
-#
-#   D. solani MK10 positive control
-#   all R. badensis genomes
-#
-# ============================================================
-
-if ! step_done "10_search_VfmA_Z"; then
-
-    echo
-    echo "============================================================"
-    echo "STEP 10: Searching VfmA-VfmZ in all genomes"
-    echo "============================================================"
-    echo
-
-
-    VFM26_QUERY="${QUERY}/Ddadantii_VfmA_Z_26proteins.faa"
-
-
-    # ========================================================
-    # D. SOLANI POSITIVE CONTROL
-    # ========================================================
-
-    tblastn \
-        -query "${VFM26_QUERY}" \
-        -db "${DB}/Dsolani_MK10/MK10" \
-        -evalue 1e-5 \
-        -max_target_seqs 10 \
-        -max_hsps 1 \
-        -num_threads "${THREADS}" \
-        -outfmt \
-'6 qseqid sseqid pident length qlen qcovhsp sstart send evalue bitscore' \
-        > "${RAW}/VfmA_Z_vs_Dsolani_MK10.tsv"
-
-
-    # ========================================================
-    # ROUXIELLA GENOMES
-    # ========================================================
-
-    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
-
-
-    for FNA in "${RB_GENOMES[@]}"; do
-
-
-        ACC="$(basename "${FNA}" .fna)"
-
-
-        GENOME_DONE="${STATE}/10_VfmAZ_${ACC}.done"
-
-
-        if [[ -f "${GENOME_DONE}" ]]; then
-
-            echo
-            echo "${ACC}: VfmA-Z search already completed — skipping"
-
-            continue
-
-        fi
-
-
-        echo
-        echo "Searching 26 Vfm proteins in ${ACC}"
-
-
-        tblastn \
-            -query "${VFM26_QUERY}" \
-            -db "${DB}/${ACC}/${ACC}" \
-            -evalue 1e-5 \
-            -max_target_seqs 10 \
-            -max_hsps 1 \
-            -num_threads "${THREADS}" \
-            -outfmt \
-'6 qseqid sseqid pident length qlen qcovhsp sstart send evalue bitscore' \
-            > "${RAW}/VfmA_Z_vs_${ACC}.tsv"
-
-
-        touch "${GENOME_DONE}"
-
-
-    done
-
-
-    mark_done "10_search_VfmA_Z"
-
-else
-
-    echo
-    echo ">>> STEP 10 already completed — skipping"
-
-fi
-
-
-
-# ============================================================
-# STEP 11
-# CREATE VfmA-Z PRESENCE / ABSENCE MATRIX
-# AND TEST FOR A COHERENT VFM LOCUS
-# ============================================================
-
-if ! step_done "11_VfmA_Z_summary"; then
-
-    echo
-    echo "============================================================"
-    echo "STEP 11: VfmA-Z presence/absence and synteny analysis"
-    echo "============================================================"
-    echo
-
-
-    export ROOT
-    export RAW
-    export RESULTS
-    export RB_PRIMARY
-
-
-    python <<'PY'
-
-from pathlib import Path
-from collections import defaultdict
-import os
-
-
-root = Path(os.environ["ROOT"])
-
-raw = Path(os.environ["RAW"])
-
-results = Path(os.environ["RESULTS"])
-
-primary = os.environ["RB_PRIMARY"]
-
-
-
-# ============================================================
-# REFERENCE GENE ORDER
-# ============================================================
-
-reference_file = (
-    results
-    / "Ddadantii_VfmA_Z_reference.tsv"
-)
-
-
-reference_order = []
-
-reference_rank = {}
-
-
-with open(reference_file) as handle:
-
-    next(handle)
-
-
-    for line in handle:
-
-        fields = line.rstrip().split("\t")
-
-
-        rank = int(fields[0])
-
-        gene = fields[1]
-
-
-        reference_order.append(gene)
-
-        reference_rank[gene] = rank
-
-
-
-# ============================================================
-# GENOMES
-# ============================================================
-
-genomes = [
-    "Dsolani_MK10"
-]
-
-
-genomes += sorted(
-
-    p.stem
-    for p in
-    (root / "02_genomes").glob("*.fna")
-
-)
-
-
-
-# ============================================================
-# CLASSIFICATION
-#
-# HIGH:
-#
-#   >= 45% amino-acid identity
-#   >= 80% query coverage
-#   E <= 1e-20
-#
-# CANDIDATE:
-#
-#   >= 30% identity
-#   >= 60% query coverage
-#   E <= 1e-10
-#
-# WEAK:
-#
-#   detectable similarity but below candidate threshold
-#
-# ABSENT:
-#
-#   no BLAST hit
-#
-#
-# IMPORTANT:
-#
-# Even HIGH/CANDIDATE does not by itself prove Vfm orthology.
-# Co-localization and synteny are assessed separately.
-#
-# ============================================================
-
-def classify(identity, qcov, evalue):
-
-    if (
-        identity >= 45
-        and qcov >= 80
-        and evalue <= 1e-20
-    ):
-
-        return "HIGH"
-
-
-    if (
-        identity >= 30
-        and qcov >= 60
-        and evalue <= 1e-10
-    ):
-
-        return "CANDIDATE"
-
-
-    return "WEAK"
-
-
-
-# ============================================================
-# READ BEST HIT FOR EACH QUERY
-# ============================================================
-
-def read_best_hits(path):
-
-    best = {}
-
-
-    if not path.exists():
-
-        return best
-
-
-    with open(path) as handle:
-
-        for line in handle:
-
-
-            if not line.strip():
-
-                continue
-
-
-            p = line.rstrip().split("\t")
-
-
-            query_full = p[0]
-
-
-            gene = query_full.split("|")[0]
-
-
-            rec = {
-
-                "gene": gene,
-
-                "query_full": query_full,
-
-                "contig": p[1],
-
-                "identity": float(p[2]),
-
-                "alignment_length": int(p[3]),
-
-                "qlen": int(p[4]),
-
-                "qcov": float(p[5]),
-
-                "sstart": int(p[6]),
-
-                "send": int(p[7]),
-
-                "evalue": float(p[8]),
-
-                "bitscore": float(p[9]),
-
-            }
-
-
-            if (
-                gene not in best
-                or rec["bitscore"]
-                > best[gene]["bitscore"]
-            ):
-
-                best[gene] = rec
-
-
-    return best
-
-
-
-# ============================================================
-# SYNTENY ORDER SCORE
-#
-# Compare order of accepted genes on the target contig to
-# their true D. dadantii reference order.
-#
-# Because an entire locus can invert, we evaluate both:
-#
-#   forward orientation
-#   reverse orientation
-#
-# Score:
-#
-#   1.0 = perfect order
-#   0.5 = partially conserved
-#   etc.
-#
-# ============================================================
-
-def order_concordance(genes):
-
-    if len(genes) < 2:
-
-        return None
-
-
-    ranks = [
-        reference_rank[g]
-        for g in genes
-    ]
-
-
-    concordant = 0
-
-    discordant = 0
-
-
-    for i in range(len(ranks)):
-
-        for j in range(i + 1, len(ranks)):
-
-
-            if ranks[i] < ranks[j]:
-
-                concordant += 1
-
-            elif ranks[i] > ranks[j]:
-
-                discordant += 1
-
-
-    total = concordant + discordant
-
-
-    if total == 0:
-
-        return None
-
-
-    forward = concordant / total
-
-    reverse = discordant / total
-
-
-    return max(
-        forward,
-        reverse,
-    )
-
-
-
-# ============================================================
-# PROCESS ALL GENOMES
-# ============================================================
-
-long_rows = []
-
-matrix = {}
-
-cluster_rows = []
-
-
-for genome in genomes:
-
-
-    if genome == "Dsolani_MK10":
-
-        path = (
-            raw
-            / "VfmA_Z_vs_Dsolani_MK10.tsv"
-        )
-
-    else:
-
-        path = (
-            raw
-            / f"VfmA_Z_vs_{genome}.tsv"
-        )
-
-
-    best = read_best_hits(path)
-
-
-    matrix[genome] = {}
-
-
-    accepted_by_contig = defaultdict(list)
-
-
-    n_high = 0
-
-    n_candidate = 0
-
-    n_weak = 0
-
-    n_absent = 0
-
-
-    for gene in reference_order:
-
-
-        if gene not in best:
-
-
-            status = "ABSENT"
-
-            n_absent += 1
-
-
-            matrix[genome][gene] = status
-
-
-            long_rows.append({
-
-                "genome": genome,
-
-                "gene": gene,
-
-                "contig": "NA",
-
-                "identity": 0,
-
-                "qcov": 0,
-
-                "start": 0,
-
-                "end": 0,
-
-                "strand": "NA",
-
-                "evalue": 1,
-
-                "bitscore": 0,
-
-                "status": status,
-
-            })
-
-
-            continue
-
-
-
-        rec = best[gene]
-
-
-        status = classify(
-            rec["identity"],
-            rec["qcov"],
-            rec["evalue"],
-        )
-
-
-        matrix[genome][gene] = status
-
-
-        if status == "HIGH":
-
-            n_high += 1
-
-
-        elif status == "CANDIDATE":
-
-            n_candidate += 1
-
-
-        else:
-
-            n_weak += 1
-
-
-        start = min(
-            rec["sstart"],
-            rec["send"],
-        )
-
-        end = max(
-            rec["sstart"],
-            rec["send"],
-        )
-
-
-        strand = (
-            "+"
-            if rec["sstart"] <= rec["send"]
-            else "-"
-        )
-
-
-        long_rows.append({
-
-            "genome": genome,
-
-            "gene": gene,
-
-            "contig": rec["contig"],
-
-            "identity": rec["identity"],
-
-            "qcov": rec["qcov"],
-
-            "start": start,
-
-            "end": end,
-
-            "strand": strand,
-
-            "evalue": rec["evalue"],
-
-            "bitscore": rec["bitscore"],
-
-            "status": status,
-
-        })
-
-
-        if status in {
-            "HIGH",
-            "CANDIDATE",
-        }:
-
-            accepted_by_contig[
-                rec["contig"]
-            ].append({
-
-                "gene": gene,
-
-                "start": start,
-
-                "end": end,
-
-            })
-
-
-
-    # ========================================================
-    # IDENTIFY BEST PUTATIVE VFM CONTIG
-    # ========================================================
-
-    top_contig = "NA"
-
-    top_hits = []
-
-    top_span = "NA"
-
-    synteny = "NA"
-
-
-    if accepted_by_contig:
-
-
-        top_contig, top_hits = max(
-
-            accepted_by_contig.items(),
-
-            key=lambda x: len(x[1]),
-
-        )
-
-
-        target_sorted = sorted(
-
-            top_hits,
-
-            key=lambda x: x["start"],
-
-        )
-
-
-        starts = [
-            x["start"]
-            for x in target_sorted
-        ]
-
-
-        ends = [
-            x["end"]
-            for x in target_sorted
-        ]
-
-
-        top_span = (
-            max(ends)
-            - min(starts)
-            + 1
-        )
-
-
-        target_gene_order = [
-            x["gene"]
-            for x in target_sorted
-        ]
-
-
-        score = order_concordance(
-            target_gene_order
-        )
-
-
-        if score is not None:
-
-            synteny = round(
-                score,
-                3,
-            )
-
-
-
-    accepted_total = (
-        n_high
-        + n_candidate
-    )
-
-
-    top_count = len(top_hits)
-
-
-
-    # ========================================================
-    # COHERENT LOCUS DEFINITION
-    #
-    # Conservative manuscript-level criterion:
-    #
-    #   >=20/26 accepted Vfm proteins
-    #   >=20 on one contig
-    #   locus span <=60 kb
-    #   gene-order concordance >=0.80
-    #
-    # ========================================================
-
-    coherent = False
-
-
-    if (
-        accepted_total >= 20
-        and top_count >= 20
-        and top_span != "NA"
-        and top_span <= 60000
-        and synteny != "NA"
-        and synteny >= 0.80
-    ):
-
-        coherent = True
-
-
-
-    cluster_rows.append({
-
-        "genome": genome,
-
-        "high": n_high,
-
-        "candidate": n_candidate,
-
-        "weak": n_weak,
-
-        "absent": n_absent,
-
-        "accepted_total": accepted_total,
-
-        "top_contig": top_contig,
-
-        "top_count": top_count,
-
-        "top_span": top_span,
-
-        "synteny": synteny,
-
-        "coherent": coherent,
-
-    })
-
-
-
-# ============================================================
-# WRITE LONG-FORM BEST-HIT TABLE
-# ============================================================
-
-long_file = (
-    results
-    / "VfmA_Z_best_hits_all_genomes.tsv"
-)
-
-
-with open(long_file, "w") as out:
-
-
-    out.write(
-        "genome\tgene\ttarget_contig\t"
-        "identity_pct\tquery_coverage_pct\t"
-        "start\tend\tstrand\t"
-        "evalue\tbitscore\tclassification\n"
-    )
-
-
-    for r in long_rows:
-
-
-        out.write(
-            f"{r['genome']}\t"
-            f"{r['gene']}\t"
-            f"{r['contig']}\t"
-            f"{r['identity']:.2f}\t"
-            f"{r['qcov']:.1f}\t"
-            f"{r['start']}\t"
-            f"{r['end']}\t"
-            f"{r['strand']}\t"
-            f"{r['evalue']:.3g}\t"
-            f"{r['bitscore']:.1f}\t"
-            f"{r['status']}\n"
-        )
-
-
-
-# ============================================================
-# WRITE PRESENCE / ABSENCE MATRIX
-# ============================================================
-
-matrix_file = (
-    results
-    / "VfmA_Z_presence_matrix.tsv"
-)
-
-
-with open(matrix_file, "w") as out:
-
-
-    out.write(
-        "genome\t"
-        + "\t".join(reference_order)
-        + "\n"
-    )
-
-
-    for genome in genomes:
-
-
-        values = [
-            matrix[genome][gene]
-            for gene in reference_order
-        ]
-
-
-        out.write(
-            genome
-            + "\t"
-            + "\t".join(values)
-            + "\n"
-        )
-
-
-
-# ============================================================
-# WRITE CLUSTER/SYNTENY SUMMARY
-# ============================================================
-
-cluster_file = (
-    results
-    / "VfmA_Z_cluster_summary.tsv"
-)
-
-
-with open(cluster_file, "w") as out:
-
-
-    out.write(
-        "genome\t"
-        "HIGH\t"
-        "CANDIDATE\t"
-        "WEAK\t"
-        "ABSENT\t"
-        "accepted_total\t"
-        "top_contig\t"
-        "accepted_on_top_contig\t"
-        "top_contig_span_bp\t"
-        "gene_order_concordance\t"
-        "coherent_Vfm_locus\n"
-    )
-
-
-    for r in cluster_rows:
-
-
-        out.write(
-            f"{r['genome']}\t"
-            f"{r['high']}\t"
-            f"{r['candidate']}\t"
-            f"{r['weak']}\t"
-            f"{r['absent']}\t"
-            f"{r['accepted_total']}\t"
-            f"{r['top_contig']}\t"
-            f"{r['top_count']}\t"
-            f"{r['top_span']}\t"
-            f"{r['synteny']}\t"
-            f"{r['coherent']}\n"
-        )
-
-
-
-# ============================================================
-# WRITE PRIMARY 20GA0316 TABLE
-# ============================================================
-
-primary_file = (
-    results
-    / "20GA0316_VfmA_Z.tsv"
-)
-
-
-with open(primary_file, "w") as out:
-
-
-    out.write(
-        "gene\ttarget_contig\t"
-        "identity_pct\tquery_coverage_pct\t"
-        "start\tend\tstrand\t"
-        "evalue\tbitscore\tclassification\n"
-    )
-
-
-    for r in long_rows:
-
-
-        if r["genome"] != primary:
-
-            continue
-
-
-        out.write(
-            f"{r['gene']}\t"
-            f"{r['contig']}\t"
-            f"{r['identity']:.2f}\t"
-            f"{r['qcov']:.1f}\t"
-            f"{r['start']}\t"
-            f"{r['end']}\t"
-            f"{r['strand']}\t"
-            f"{r['evalue']:.3g}\t"
-            f"{r['bitscore']:.1f}\t"
-            f"{r['status']}\n"
-        )
-
-
-
-# ============================================================
-# WRITE D. SOLANI POSITIVE CONTROL TABLE
-# ============================================================
-
-mk10_file = (
-    results
-    / "Dsolani_MK10_VfmA_Z.tsv"
-)
-
-
-with open(mk10_file, "w") as out:
-
-
-    out.write(
-        "gene\ttarget_contig\t"
-        "identity_pct\tquery_coverage_pct\t"
-        "start\tend\tstrand\t"
-        "evalue\tbitscore\tclassification\n"
-    )
-
-
-    for r in long_rows:
-
-
-        if r["genome"] != "Dsolani_MK10":
-
-            continue
-
-
-        out.write(
-            f"{r['gene']}\t"
-            f"{r['contig']}\t"
-            f"{r['identity']:.2f}\t"
-            f"{r['qcov']:.1f}\t"
-            f"{r['start']}\t"
-            f"{r['end']}\t"
-            f"{r['strand']}\t"
-            f"{r['evalue']:.3g}\t"
-            f"{r['bitscore']:.1f}\t"
-            f"{r['status']}\n"
-        )
-
-
-
-print()
-print("VfmA-Z analysis completed.")
-print()
-print(f"Presence matrix: {matrix_file}")
-print(f"Cluster summary: {cluster_file}")
-print(f"20GA0316 table: {primary_file}")
-print()
-
-PY
-
-
-    mark_done "11_VfmA_Z_summary"
-
-else
-
-    echo
-    echo ">>> STEP 11 already completed — skipping"
-
-fi
-
-
-
-# ============================================================
-# STEP 12
-# PRINT FINAL MANUSCRIPT-LEVEL SUMMARY
-# ============================================================
-
-if ! step_done "12_VfmA_Z_report"; then
-
-    echo
-    echo "============================================================"
-    echo "STEP 12: Final VfmA-Z report"
-    echo "============================================================"
-    echo
-
-
-    echo
-    echo "===== CANONICAL D. DADANTII VFM LOCUS ====="
-
-    column -t \
-"${RESULTS}/Ddadantii_VfmA_Z_reference.tsv" \
-        || cat \
-"${RESULTS}/Ddadantii_VfmA_Z_reference.tsv"
-
-
-    echo
-    echo "===== D. SOLANI POSITIVE CONTROL ====="
-
-    column -t \
-"${RESULTS}/Dsolani_MK10_VfmA_Z.tsv" \
-        || true
-
-
-    echo
-    echo "===== R. BADENSIS 20GA0316 ====="
-
-    column -t \
-"${RESULTS}/20GA0316_VfmA_Z.tsv" \
-        || true
-
-
-    echo
-    echo "===== VFM LOCUS SUMMARY ====="
-
-    column -t \
-"${RESULTS}/VfmA_Z_cluster_summary.tsv" \
-        || true
-
-
-    echo
-    echo "===== PRESENCE / ABSENCE MATRIX ====="
-
-    column -t \
-"${RESULTS}/VfmA_Z_presence_matrix.tsv" \
-        || true
-
-
-    mark_done "12_VfmA_Z_report"
-
-else
-
-    echo
-    echo ">>> STEP 12 already completed — skipping"
 
 fi
