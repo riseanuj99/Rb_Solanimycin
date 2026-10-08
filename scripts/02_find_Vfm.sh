@@ -909,13 +909,33 @@ if ! step_done "05_BLAST_databases"; then
     # All R. badensis genomes
     # --------------------------------------------------------
 
-    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
+   # ========================================================
+# USE ONLY THE CURATED NONREDUNDANT ROUXIELLA GENOME SET
+# ========================================================
+
+SELECTED_ACCESSIONS="${ROOT}/01_NCBI/selected_accessions.txt"
+
+[[ -s "${SELECTED_ACCESSIONS}" ]] || \
+    die "Missing curated accession list: ${SELECTED_ACCESSIONS}"
 
 
-    for FNA in "${RB_GENOMES[@]}"; do
+while IFS= read -r ACC || [[ -n "${ACC}" ]]; do
+
+    # Remove possible Windows carriage return
+    ACC="${ACC//$'\r'/}"
+
+    # Skip blank lines
+    [[ -z "${ACC}" ]] && continue
 
 
-        ACC="$(basename "${FNA}" .fna)"
+    FNA="${ROOT}/02_genomes/${ACC}.fna"
+
+
+    if [[ ! -s "${FNA}" ]]; then
+
+        die "Genome FASTA missing for curated accession: ${ACC}"
+
+    fi
 
 
         echo "Building DB: ${ACC}"
