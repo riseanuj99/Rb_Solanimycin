@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=/scratch/al98750/Roux/logs/Roux_ExpIR_%j.out
 #SBATCH --error=/scratch/al98750/Roux/logs/Roux_ExpIR_%j.err
 
@@ -19,10 +19,10 @@ shopt -s nullglob
 # AHL QUORUM-SENSING ARCHITECTURE IN ROUXIELLA BADENSIS
 # ============================================================
 #
-# Main question:
+# Question:
 #
 # Does Rouxiella badensis possess an ExpI/ExpR-like AHL
-# quorum-sensing system comparable to the system regulating
+# quorum-sensing system comparable to that regulating
 # solanimycin in Dickeya solani?
 #
 #
@@ -31,43 +31,39 @@ shopt -s nullglob
 #   Dickeya solani MK10
 #   GCA_000365285.1
 #
-# MK10 is used because solanimycin and ExpIR regulation were
-# experimentally investigated in this strain.
 #
-#
-# Primary Rouxiella strain:
+# Primary target:
 #
 #   Rouxiella badensis 20GA0316
 #   GCF_020740305.1
 #
 #
-# Current workflow:
+# Workflow:
 #
-#   STEP 01 - Create directories / verify environment
-#   STEP 02 - Download D. solani MK10
-#   STEP 03 - Identify ExpI/LuxI and ExpR/LuxR candidates in MK10
-#   STEP 04 - Create BLAST database for R. badensis 20GA0316
-#   STEP 05 - Search MK10 ExpI candidates against 20GA0316
-#   STEP 06 - Search MK10 ExpR candidates against 20GA0316
-#   STEP 07 - Summarize best hits
+#   01 - Check environment
+#   02 - Download D. solani MK10 genome
+#   03 - Annotate MK10 consistently with Bakta
+#   04 - Identify ExpI/LuxI and ExpR/LuxR candidates in MK10
+#   05 - Build 20GA0316 BLAST database
+#   06 - Search ExpI candidates against 20GA0316
+#   07 - Search ExpR candidates against 20GA0316
+#   08 - Create summary tables
 #
 #
-# CHECKPOINT SYSTEM:
+# Checkpoints:
 #
-# Each completed step creates:
+#   /scratch/al98750/Roux/05_QS_ExpIR/.state/
 #
-#   /scratch/al98750/Roux/05_QS_ExpIR/.state/STEP.done
+# Completed steps are NOT rerun.
 #
-# If this script is run again, completed steps are skipped.
-#
-# Therefore future steps can simply be added below this script.
+# Future STEP 09, STEP 10, etc. can be appended later.
 #
 # ============================================================
 
 
 
 # ============================================================
-# PROJECT PATHS
+# PATHS
 # ============================================================
 
 ROOT="/scratch/al98750/Roux"
@@ -75,6 +71,8 @@ ROOT="/scratch/al98750/Roux"
 WORK="${ROOT}/05_QS_ExpIR"
 
 REF="${WORK}/01_Dsolani_MK10"
+
+MK10_ANNOT="${REF}/bakta_annotation"
 
 QUERY="${WORK}/02_queries"
 
@@ -90,28 +88,32 @@ STATE="${WORK}/.state"
 
 TMP="${WORK}/tmp"
 
+
 THREADS="${SLURM_CPUS_PER_TASK:-4}"
 
 
-# ------------------------------------------------------------
-# Primary R. badensis genome
-# ------------------------------------------------------------
+# ============================================================
+# ACCESSIONS
+# ============================================================
 
 RB_ACC="GCF_020740305.1"
 
 RB_GENOME="${ROOT}/02_genomes/${RB_ACC}.fna"
 
 
-# ------------------------------------------------------------
-# D. solani MK10 reference
-# ------------------------------------------------------------
-
 MK10_ACC="GCA_000365285.1"
+
+
+# ============================================================
+# BAKTA DATABASE
+# ============================================================
+
+BAKTA_DB="${ROOT}/db/bakta/db-light"
 
 
 
 # ============================================================
-# CREATE ALL OUTPUT DIRECTORIES
+# CREATE ALL NEEDED DIRECTORIES
 # ============================================================
 
 mkdir -p \
@@ -166,9 +168,16 @@ echo " ROUXIELLA ExpIR DISCOVERY PIPELINE"
 echo "============================================================"
 echo
 
-echo "Job ID:            ${SLURM_JOB_ID:-interactive}"
-echo "Node:              $(hostname)"
-echo "Threads:           ${THREADS}"
+echo "Job ID:"
+echo "  ${SLURM_JOB_ID:-interactive}"
+echo
+
+echo "Node:"
+echo "  $(hostname)"
+echo
+
+echo "Threads:"
+echo "  ${THREADS}"
 echo
 
 echo "R. badensis:"
@@ -179,7 +188,7 @@ echo "D. solani reference:"
 echo "  ${MK10_ACC}"
 echo
 
-echo "Working directory:"
+echo "Work directory:"
 echo "  ${WORK}"
 echo
 
@@ -190,8 +199,18 @@ echo
 
 
 # ============================================================
+# ACTIVATE EXISTING ROUX ENVIRONMENT
+# ============================================================
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+conda activate "${ROOT}/envs/roux"
+
+
+
+# ============================================================
 # STEP 01
-# ACTIVATE SOFTWARE ENVIRONMENT AND VERIFY INPUTS
+# CHECK ENVIRONMENT
 # ============================================================
 
 if ! step_done "01_environment"; then
@@ -203,13 +222,9 @@ if ! step_done "01_environment"; then
     echo
 
 
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-
-    conda activate "${ROOT}/envs/roux"
-
-
     for PROGRAM in \
         datasets \
+        bakta \
         seqkit \
         makeblastdb \
         tblastn \
@@ -226,13 +241,11 @@ if ! step_done "01_environment"; then
 
 
     [[ -s "${RB_GENOME}" ]] || \
-        die "20GA0316 genome not found: ${RB_GENOME}"
+        die "20GA0316 genome missing: ${RB_GENOME}"
 
 
-    echo
-    echo "Rouxiella genome:"
-    echo "${RB_GENOME}"
-    echo
+    [[ -d "${BAKTA_DB}" ]] || \
+        die "Bakta database missing: ${BAKTA_DB}"
 
 
     mark_done "01_environment"
@@ -247,18 +260,29 @@ fi
 
 
 # ============================================================
-# ACTIVATE ENVIRONMENT FOR ALL SUBSEQUENT STEPS
+# ALWAYS VERIFY REQUIRED SOFTWARE
 # ============================================================
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+for PROGRAM in \
+    datasets \
+    bakta \
+    seqkit \
+    makeblastdb \
+    tblastn \
+    unzip
 
-conda activate "${ROOT}/envs/roux"
+do
+
+    command -v "${PROGRAM}" >/dev/null 2>&1 || \
+        die "${PROGRAM} was not found."
+
+done
 
 
 
 # ============================================================
 # STEP 02
-# DOWNLOAD DICKEYA SOLANI MK10
+# DOWNLOAD D. SOLANI MK10
 # ============================================================
 
 if ! step_done "02_download_MK10"; then
@@ -280,14 +304,22 @@ if ! step_done "02_download_MK10"; then
     rm -rf "${MK10_PACKAGE}"
 
 
+    # --------------------------------------------------------
+    # Genome sequence is the critical requirement.
+    #
+    # Annotation files may not be provided for this GenBank
+    # assembly, so MK10 will be annotated locally with Bakta
+    # in STEP 03.
+    # --------------------------------------------------------
+
     datasets download genome accession \
         "${MK10_ACC}" \
-        --include genome,gff3,gbff,protein,cds,rna \
+        --include genome \
         --filename "${MK10_ZIP}"
 
 
     [[ -s "${MK10_ZIP}" ]] || \
-        die "MK10 NCBI download failed."
+        die "MK10 download failed."
 
 
     mkdir -p "${MK10_PACKAGE}"
@@ -296,13 +328,6 @@ if ! step_done "02_download_MK10"; then
     unzip -q \
         "${MK10_ZIP}" \
         -d "${MK10_PACKAGE}"
-
-
-    MK10_DIR="${MK10_PACKAGE}/ncbi_dataset/data/${MK10_ACC}"
-
-
-    [[ -d "${MK10_DIR}" ]] || \
-        die "MK10 NCBI package directory was not found."
 
 
     mark_done "02_download_MK10"
@@ -317,133 +342,103 @@ fi
 
 
 # ============================================================
-# DEFINE MK10 FILES
+# LOCATE MK10 GENOME
 # ============================================================
 
-MK10_DIR="${REF}/package/ncbi_dataset/data/${MK10_ACC}"
+MK10_PACKAGE="${REF}/package"
 
 
-MK10_GFF="$(find "${MK10_DIR}" \
-    -maxdepth 1 \
+MK10_FNA="$(find "${MK10_PACKAGE}/ncbi_dataset/data" \
     -type f \
-    \( -name "*.gff" -o -name "*.gff3" \) \
+    -name "*.fna" \
     | head -1)"
 
 
-MK10_FAA="$(find "${MK10_DIR}" \
-    -maxdepth 1 \
-    -type f \
-    -name "*.faa" \
-    | head -1)"
+[[ -n "${MK10_FNA}" && -s "${MK10_FNA}" ]] || {
 
+    echo
+    echo "Files currently present in MK10 package:"
+    find "${MK10_PACKAGE}" -type f | sort
+    echo
 
-MK10_FNA="$(find "${MK10_DIR}" \
-    -maxdepth 1 \
-    -type f \
-    -name "*genomic.fna" \
-    | head -1)"
-
-
-[[ -n "${MK10_GFF}" && -s "${MK10_GFF}" ]] || \
-    die "MK10 GFF file was not found."
-
-
-[[ -n "${MK10_FAA}" && -s "${MK10_FAA}" ]] || \
-    die "MK10 protein FASTA was not found."
-
-
-[[ -n "${MK10_FNA}" && -s "${MK10_FNA}" ]] || \
     die "MK10 genome FASTA was not found."
+
+}
+
+
+echo
+echo "MK10 genome:"
+echo "  ${MK10_FNA}"
+echo
 
 
 
 # ============================================================
 # STEP 03
-# IDENTIFY ExpI / ExpR CANDIDATES IN MK10
+# ANNOTATE MK10 WITH BAKTA
+# ============================================================
+#
+# This solves the previous failure.
+#
+# GCA_000365285.1 does not provide the annotation files that
+# our previous script expected.
+#
+# We therefore annotate MK10 ourselves using exactly the same
+# Bakta installation/database used for R. badensis.
+#
+# This also makes comparisons more consistent.
+#
 # ============================================================
 
-if ! step_done "03_find_MK10_ExpIR"; then
+if ! step_done "03_annotate_MK10"; then
 
     echo
     echo "============================================================"
-    echo "STEP 03: Finding ExpI / ExpR candidates in MK10"
+    echo "STEP 03: Annotating D. solani MK10 with Bakta"
     echo "============================================================"
     echo
 
 
-    # --------------------------------------------------------
-    # Save broad annotation hits for manual inspection.
-    # --------------------------------------------------------
+    if [[ -d "${MK10_ANNOT}" ]]; then
 
-    grep -iE \
-'expI|expR|luxI|luxR|homoserine.lactone|AHL|autoinducer|quorum' \
-        "${MK10_GFF}" \
-        > "${RESULTS}/MK10_QS_annotation_hits.txt" \
-        || true
+        echo "Removing incomplete previous MK10 annotation:"
+        echo "  ${MK10_ANNOT}"
 
+        rm -rf "${MK10_ANNOT}"
 
-    # --------------------------------------------------------
-    # Search FASTA headers.
-    # --------------------------------------------------------
-
-    grep '^>' "${MK10_FAA}" \
-        | grep -iE \
-'expI|expR|luxI|luxR|homoserine.lactone|autoinducer|quorum' \
-        > "${RESULTS}/MK10_QS_protein_headers.txt" \
-        || true
+    fi
 
 
-    # --------------------------------------------------------
-    # EXP I / LUX I CANDIDATES
-    #
-    # Broad patterns are intentional because annotation names
-    # may vary.
-    # --------------------------------------------------------
-
-    seqkit grep \
-        -r \
-        -i \
-        -p 'ExpI|LuxI|homoserine.lactone.*synthase|autoinducer.*synthase' \
-        "${MK10_FAA}" \
-        > "${QUERY}/MK10_ExpI_candidates.faa" \
-        || true
+    # IMPORTANT:
+    # Do not mkdir MK10_ANNOT.
+    # Bakta creates the output directory itself.
 
 
-    # --------------------------------------------------------
-    # EXP R / LUX R CANDIDATES
-    # --------------------------------------------------------
-
-    seqkit grep \
-        -r \
-        -i \
-        -p 'ExpR|LuxR|quorum.*regulator|autoinducer.*regulator' \
-        "${MK10_FAA}" \
-        > "${QUERY}/MK10_ExpR_candidates.faa" \
-        || true
-
-
-    echo
-    echo "ExpI/LuxI candidate proteins:"
-    echo
-
-    grep '^>' \
-        "${QUERY}/MK10_ExpI_candidates.faa" \
-        || true
+    bakta \
+        --db "${BAKTA_DB}" \
+        --output "${MK10_ANNOT}" \
+        --prefix "Dsolani_MK10" \
+        --genus Dickeya \
+        --species solani \
+        --gram - \
+        --threads "${THREADS}" \
+        --keep-contig-headers \
+        "${MK10_FNA}"
 
 
-    echo
-    echo "ExpR/LuxR candidate proteins:"
-    echo
-
-    grep '^>' \
-        "${QUERY}/MK10_ExpR_candidates.faa" \
-        || true
+    [[ -s "${MK10_ANNOT}/Dsolani_MK10.gff3" ]] || \
+        die "MK10 Bakta GFF3 was not created."
 
 
-    echo
+    [[ -s "${MK10_ANNOT}/Dsolani_MK10.faa" ]] || \
+        die "MK10 Bakta protein FASTA was not created."
 
 
-    mark_done "03_find_MK10_ExpIR"
+    [[ -s "${MK10_ANNOT}/Dsolani_MK10.tsv" ]] || \
+        die "MK10 Bakta TSV was not created."
+
+
+    mark_done "03_annotate_MK10"
 
 else
 
@@ -455,15 +450,137 @@ fi
 
 
 # ============================================================
-# STEP 04
-# CREATE BLAST DATABASE FOR R. BADENSIS 20GA0316
+# DEFINE STANDARDIZED MK10 ANNOTATION FILES
 # ============================================================
 
-if ! step_done "04_Rb_BLAST_database"; then
+MK10_GFF="${MK10_ANNOT}/Dsolani_MK10.gff3"
+
+MK10_FAA="${MK10_ANNOT}/Dsolani_MK10.faa"
+
+MK10_TSV="${MK10_ANNOT}/Dsolani_MK10.tsv"
+
+MK10_FFN="${MK10_ANNOT}/Dsolani_MK10.ffn"
+
+
+[[ -s "${MK10_GFF}" ]] || \
+    die "MK10 GFF missing: ${MK10_GFF}"
+
+
+[[ -s "${MK10_FAA}" ]] || \
+    die "MK10 FAA missing: ${MK10_FAA}"
+
+
+[[ -s "${MK10_TSV}" ]] || \
+    die "MK10 TSV missing: ${MK10_TSV}"
+
+
+
+# ============================================================
+# STEP 04
+# IDENTIFY ExpI / LuxI AND ExpR / LuxR CANDIDATES IN MK10
+# ============================================================
+
+if ! step_done "04_find_MK10_ExpIR"; then
 
     echo
     echo "============================================================"
-    echo "STEP 04: Building R. badensis BLAST database"
+    echo "STEP 04: Finding ExpI/LuxI and ExpR/LuxR in MK10"
+    echo "============================================================"
+    echo
+
+
+    # --------------------------------------------------------
+    # Broad TSV search
+    # --------------------------------------------------------
+
+    grep -iE \
+'expI|expR|luxI|luxR|homoserine lactone|autoinducer|quorum' \
+        "${MK10_TSV}" \
+        > "${RESULTS}/MK10_QS_annotation_hits.txt" \
+        || true
+
+
+    # --------------------------------------------------------
+    # Protein FASTA headers
+    # --------------------------------------------------------
+
+    grep '^>' "${MK10_FAA}" \
+        | grep -iE \
+'expI|expR|luxI|luxR|homoserine.lactone|autoinducer|quorum' \
+        > "${RESULTS}/MK10_QS_protein_headers.txt" \
+        || true
+
+
+    # ========================================================
+    # ExpI / LuxI candidate proteins
+    # ========================================================
+
+    seqkit grep \
+        -r \
+        -i \
+        -p \
+'ExpI|LuxI|acyl.*homoserine.*lactone.*synthase|homoserine.*lactone.*synthase|autoinducer.*synthase' \
+        "${MK10_FAA}" \
+        > "${QUERY}/MK10_ExpI_candidates.faa" \
+        || true
+
+
+    # ========================================================
+    # ExpR / LuxR candidate proteins
+    # ========================================================
+
+    seqkit grep \
+        -r \
+        -i \
+        -p \
+'ExpR|LuxR|LuxR.*family|quorum.*regulator|autoinducer.*regulator' \
+        "${MK10_FAA}" \
+        > "${QUERY}/MK10_ExpR_candidates.faa" \
+        || true
+
+
+    echo
+    echo "MK10 ExpI/LuxI candidates:"
+    echo
+
+    grep '^>' \
+        "${QUERY}/MK10_ExpI_candidates.faa" \
+        || true
+
+
+    echo
+    echo "MK10 ExpR/LuxR candidates:"
+    echo
+
+    grep '^>' \
+        "${QUERY}/MK10_ExpR_candidates.faa" \
+        || true
+
+
+    echo
+
+
+    mark_done "04_find_MK10_ExpIR"
+
+else
+
+    echo
+    echo ">>> STEP 04 already completed — skipping"
+
+fi
+
+
+
+# ============================================================
+# STEP 05
+# CREATE 20GA0316 BLAST DATABASE
+# ============================================================
+
+if ! step_done "05_Rb_BLAST_database"; then
+
+    echo
+    echo "============================================================"
+    echo "STEP 05: Building 20GA0316 BLAST database"
     echo "============================================================"
     echo
 
@@ -478,32 +595,35 @@ if ! step_done "04_Rb_BLAST_database"; then
         -out "${BLAST_DB}/Rb20GA0316"
 
 
-    mark_done "04_Rb_BLAST_database"
+    mark_done "05_Rb_BLAST_database"
 
 else
 
     echo
-    echo ">>> STEP 04 already completed — skipping"
+    echo ">>> STEP 05 already completed — skipping"
 
 fi
 
 
 
 # ============================================================
-# STEP 05
-# SEARCH ExpI / LuxI AGAINST R. BADENSIS 20GA0316
+# STEP 06
+# SEARCH ExpI / LuxI AGAINST 20GA0316
 # ============================================================
 
-if ! step_done "05_ExpI_search"; then
+if ! step_done "06_ExpI_search"; then
 
     echo
     echo "============================================================"
-    echo "STEP 05: Searching for ExpI/LuxI in 20GA0316"
+    echo "STEP 06: Searching ExpI/LuxI against 20GA0316"
     echo "============================================================"
     echo
 
 
     OUT="${RAW_RESULTS}/ExpI_vs_Rb20GA0316.tsv"
+
+
+    : > "${OUT}"
 
 
     if [[ -s "${QUERY}/MK10_ExpI_candidates.faa" ]]; then
@@ -522,44 +642,42 @@ if ! step_done "05_ExpI_search"; then
 
     else
 
-
         echo \
-"WARNING: No MK10 ExpI candidate was automatically extracted." \
+"WARNING: No ExpI candidate automatically identified in MK10." \
             >&2
-
-
-        : > "${OUT}"
-
 
     fi
 
 
-    mark_done "05_ExpI_search"
+    mark_done "06_ExpI_search"
 
 else
 
     echo
-    echo ">>> STEP 05 already completed — skipping"
+    echo ">>> STEP 06 already completed — skipping"
 
 fi
 
 
 
 # ============================================================
-# STEP 06
-# SEARCH ExpR / LuxR AGAINST R. BADENSIS 20GA0316
+# STEP 07
+# SEARCH ExpR / LuxR AGAINST 20GA0316
 # ============================================================
 
-if ! step_done "06_ExpR_search"; then
+if ! step_done "07_ExpR_search"; then
 
     echo
     echo "============================================================"
-    echo "STEP 06: Searching for ExpR/LuxR in 20GA0316"
+    echo "STEP 07: Searching ExpR/LuxR against 20GA0316"
     echo "============================================================"
     echo
 
 
     OUT="${RAW_RESULTS}/ExpR_vs_Rb20GA0316.tsv"
+
+
+    : > "${OUT}"
 
 
     if [[ -s "${QUERY}/MK10_ExpR_candidates.faa" ]]; then
@@ -578,39 +696,34 @@ if ! step_done "06_ExpR_search"; then
 
     else
 
-
         echo \
-"WARNING: No MK10 ExpR candidate was automatically extracted." \
+"WARNING: No ExpR candidate automatically identified in MK10." \
             >&2
-
-
-        : > "${OUT}"
-
 
     fi
 
 
-    mark_done "06_ExpR_search"
+    mark_done "07_ExpR_search"
 
 else
 
     echo
-    echo ">>> STEP 06 already completed — skipping"
+    echo ">>> STEP 07 already completed — skipping"
 
 fi
 
 
 
 # ============================================================
-# STEP 07
-# CREATE READABLE HIT SUMMARIES
+# STEP 08
+# SUMMARIZE RESULTS
 # ============================================================
 
-if ! step_done "07_summary"; then
+if ! step_done "08_summary"; then
 
     echo
     echo "============================================================"
-    echo "STEP 07: Creating ExpI / ExpR summary tables"
+    echo "STEP 08: Creating summary tables"
     echo "============================================================"
     echo
 
@@ -618,9 +731,9 @@ if ! step_done "07_summary"; then
     HEADER=$'query\ttarget\tidentity_pct\talignment_aa\tquery_length\tmismatches\tgaps\tqstart\tqend\tsstart\tsend\tevalue\tbitscore'
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # ExpI
-    # --------------------------------------------------------
+    # ========================================================
 
     echo "${HEADER}" \
         > "${RESULTS}/ExpI_best_hits.tsv"
@@ -638,9 +751,9 @@ if ! step_done "07_summary"; then
     fi
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # ExpR
-    # --------------------------------------------------------
+    # ========================================================
 
     echo "${HEADER}" \
         > "${RESULTS}/ExpR_best_hits.tsv"
@@ -658,24 +771,30 @@ if ! step_done "07_summary"; then
     fi
 
 
-    # --------------------------------------------------------
-    # Simple candidate counts
-    # --------------------------------------------------------
+    # ========================================================
+    # Counts
+    # ========================================================
+
+    EXP_I_COUNT=$(
+
+        awk 'NF > 0 {n++} END {print n+0}' \
+            "${RAW_RESULTS}/ExpI_vs_Rb20GA0316.tsv"
+
+    )
+
+
+    EXP_R_COUNT=$(
+
+        awk 'NF > 0 {n++} END {print n+0}' \
+            "${RAW_RESULTS}/ExpR_vs_Rb20GA0316.tsv"
+
+    )
+
 
     {
 
         echo -e \
-"analysis\tnumber_of_BLAST_HSPs"
-
-
-        EXP_I_COUNT=$(grep -vc '^$' \
-            "${RAW_RESULTS}/ExpI_vs_Rb20GA0316.tsv" \
-            || true)
-
-
-        EXP_R_COUNT=$(grep -vc '^$' \
-            "${RAW_RESULTS}/ExpR_vs_Rb20GA0316.tsv" \
-            || true)
+"analysis\tBLAST_HSP_count"
 
 
         echo -e \
@@ -689,12 +808,12 @@ if ! step_done "07_summary"; then
     } > "${RESULTS}/ExpIR_hit_counts.tsv"
 
 
-    mark_done "07_summary"
+    mark_done "08_summary"
 
 else
 
     echo
-    echo ">>> STEP 07 already completed — skipping"
+    echo ">>> STEP 08 already completed — skipping"
 
 fi
 
@@ -707,44 +826,36 @@ fi
 echo
 echo
 echo "============================================================"
-echo " ExpIR DISCOVERY PIPELINE COMPLETE"
+echo " ExpIR DISCOVERY COMPLETE"
 echo "============================================================"
 echo
 
-echo "Working directory:"
-echo "  ${WORK}"
+echo "MK10 Bakta annotation:"
+echo "  ${MK10_ANNOT}"
 echo
 
 echo "MK10 QS annotation hits:"
 echo "  ${RESULTS}/MK10_QS_annotation_hits.txt"
 echo
 
-echo "MK10 QS protein headers:"
-echo "  ${RESULTS}/MK10_QS_protein_headers.txt"
-echo
-
-echo "MK10 ExpI candidate proteins:"
+echo "MK10 ExpI candidate FASTA:"
 echo "  ${QUERY}/MK10_ExpI_candidates.faa"
 echo
 
-echo "MK10 ExpR candidate proteins:"
+echo "MK10 ExpR candidate FASTA:"
 echo "  ${QUERY}/MK10_ExpR_candidates.faa"
 echo
 
-echo "ExpI hits in 20GA0316:"
+echo "ExpI best hits:"
 echo "  ${RESULTS}/ExpI_best_hits.tsv"
 echo
 
-echo "ExpR hits in 20GA0316:"
+echo "ExpR best hits:"
 echo "  ${RESULTS}/ExpR_best_hits.tsv"
 echo
 
 echo "Hit counts:"
 echo "  ${RESULTS}/ExpIR_hit_counts.tsv"
-echo
-
-echo "Completed checkpoints:"
-echo "  ${STATE}/"
 echo
 
 echo "Finished:"
@@ -754,41 +865,31 @@ echo
 
 
 # ============================================================
-# ADD FUTURE STEPS BELOW THIS POINT
+# FUTURE STEPS
 # ============================================================
 #
-# IMPORTANT:
-#
-# Do NOT modify the names of completed checkpoint steps above.
-#
-# For example, later we can append:
+# Add future analysis here without changing checkpoint names:
 #
 #
-# if ! step_done "08_extract_Rb_candidates"; then
+# STEP 09:
+#   map Rouxiella BLAST hits to Bakta genes
 #
-#     echo "STEP 08: Extract exact R. badensis candidate genes"
+# STEP 10:
+#   identify exact ExpI / ExpR orthologs
 #
-#     COMMANDS
+# STEP 11:
+#   extract +/- 20 kb neighborhoods
 #
-#     mark_done "08_extract_Rb_candidates"
+# STEP 12:
+#   identify sol cluster in 20GA0316
 #
-# else
+# STEP 13:
+#   calculate ExpIR-to-sol distance
 #
-#     echo "STEP 08 already completed — skipping"
+# STEP 14:
+#   compare all 17 R. badensis genomes
 #
-# fi
-#
-#
-# Then:
-#
-#   STEP 09 - identify genes in Bakta annotation
-#   STEP 10 - extract +/- 20 kb genomic neighborhood
-#   STEP 11 - locate sol cluster
-#   STEP 12 - calculate ExpIR-to-sol genomic distance
-#   STEP 13 - compare all R. badensis genomes
-#   STEP 14 - compare architecture with D. solani MK10
-#
-# Re-running this script will skip STEP 01-07 because their
-# .done files already exist.
+# STEP 15:
+#   compare architecture to D. solani MK10
 #
 # ============================================================
