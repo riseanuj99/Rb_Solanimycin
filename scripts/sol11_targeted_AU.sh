@@ -1,6 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=sol11_AU
 #SBATCH --partition=batch
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=24G
 #SBATCH --time=12:00:00
