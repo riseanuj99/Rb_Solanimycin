@@ -117,6 +117,9 @@ MK10_ACC="GCA_000365285.1"
 
 RB_PRIMARY="GCF_020740305.1"
 
+# Curated nonredundant Rouxiella genome set used throughout this analysis.
+SELECTED_ACCESSIONS="${ROOT}/01_NCBI/selected_accessions.txt"
+
 
 # ============================================================
 # CANONICAL D. DADANTII LOCUS TAGS
@@ -282,14 +285,25 @@ if ! step_done "01_environment"; then
     done
 
 
-    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
+    [[ -s "${SELECTED_ACCESSIONS}" ]] || \
+        die "Missing curated accession list: ${SELECTED_ACCESSIONS}"
 
 
-    if [[ "${#RB_GENOMES[@]}" -eq 0 ]]; then
+    mapfile -t RB_ACCESSIONS < <(
+        sed 's/\r$//' "${SELECTED_ACCESSIONS}" | sed '/^[[:space:]]*$/d'
+    )
 
-        die "No R. badensis genomes found in ${ROOT}/02_genomes"
 
-    fi
+    [[ "${#RB_ACCESSIONS[@]}" -gt 0 ]] || \
+        die "Curated accession list is empty: ${SELECTED_ACCESSIONS}"
+
+
+    for ACC in "${RB_ACCESSIONS[@]}"; do
+
+        [[ -s "${ROOT}/02_genomes/${ACC}.fna" ]] || \
+            die "Genome FASTA missing for curated accession: ${ACC}"
+
+    done
 
 
     [[ -s "${ROOT}/02_genomes/${RB_PRIMARY}.fna" ]] || \
@@ -297,8 +311,8 @@ if ! step_done "01_environment"; then
 
 
     echo
-    echo "R. badensis genomes available:"
-    echo "  ${#RB_GENOMES[@]}"
+    echo "Curated R. badensis genomes available:"
+    echo "  ${#RB_ACCESSIONS[@]}"
     echo
 
 
@@ -913,8 +927,6 @@ if ! step_done "05_BLAST_databases"; then
 # USE ONLY THE CURATED NONREDUNDANT ROUXIELLA GENOME SET
 # ========================================================
 
-SELECTED_ACCESSIONS="${ROOT}/01_NCBI/selected_accessions.txt"
-
 [[ -s "${SELECTED_ACCESSIONS}" ]] || \
     die "Missing curated accession list: ${SELECTED_ACCESSIONS}"
 
@@ -951,7 +963,7 @@ while IFS= read -r ACC || [[ -n "${ACC}" ]]; do
             -out "${DB}/${ACC}/${ACC}"
 
 
-    done
+    done < "${SELECTED_ACCESSIONS}"
 
 
     mark_done "05_BLAST_databases"
@@ -1002,13 +1014,15 @@ if ! step_done "06_key_Vfm_search"; then
     # R. badensis genomes
     # --------------------------------------------------------
 
-    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
+    while IFS= read -r ACC || [[ -n "${ACC}" ]]; do
 
+        ACC="${ACC//$'\r'/}"
+        [[ -z "${ACC}" ]] && continue
 
-    for FNA in "${RB_GENOMES[@]}"; do
+        FNA="${ROOT}/02_genomes/${ACC}.fna"
 
-
-        ACC="$(basename "${FNA}" .fna)"
+        [[ -s "${FNA}" ]] || \
+            die "Genome FASTA missing for curated accession: ${ACC}"
 
 
         SEARCH_DONE="${STATE}/06_key_${ACC}.done"
@@ -1041,7 +1055,7 @@ if ! step_done "06_key_Vfm_search"; then
         touch "${SEARCH_DONE}"
 
 
-    done
+    done < "${SELECTED_ACCESSIONS}"
 
 
     mark_done "06_key_Vfm_search"
@@ -1092,13 +1106,15 @@ if ! step_done "07_Vfm_region_search"; then
     # R. badensis
     # --------------------------------------------------------
 
-    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
+    while IFS= read -r ACC || [[ -n "${ACC}" ]]; do
 
+        ACC="${ACC//$'\r'/}"
+        [[ -z "${ACC}" ]] && continue
 
-    for FNA in "${RB_GENOMES[@]}"; do
+        FNA="${ROOT}/02_genomes/${ACC}.fna"
 
-
-        ACC="$(basename "${FNA}" .fna)"
+        [[ -s "${FNA}" ]] || \
+            die "Genome FASTA missing for curated accession: ${ACC}"
 
 
         SEARCH_DONE="${STATE}/07_region_${ACC}.done"
@@ -1131,7 +1147,7 @@ if ! step_done "07_Vfm_region_search"; then
         touch "${SEARCH_DONE}"
 
 
-    done
+    done < "${SELECTED_ACCESSIONS}"
 
 
     mark_done "07_Vfm_region_search"
@@ -1185,12 +1201,16 @@ primary = os.environ["RB_PRIMARY"]
 # Genome list
 # ============================================================
 
-genomes = ["Dsolani_MK10"]
+selected_file = root / "01_NCBI" / "selected_accessions.txt"
 
-genomes += sorted(
-    p.stem
-    for p in (root / "02_genomes").glob("*.fna")
-)
+with open(selected_file) as fh:
+    selected_genomes = [
+        line.strip()
+        for line in fh
+        if line.strip()
+    ]
+
+genomes = ["Dsolani_MK10"] + selected_genomes
 
 
 
@@ -2589,13 +2609,19 @@ if ! step_done "11_exact_Vfm26_search"; then
     # ALL R. BADENSIS GENOMES
     # ========================================================
 
-    RB_GENOMES=( "${ROOT}/02_genomes/"*.fna )
+    [[ -s "${SELECTED_ACCESSIONS}" ]] || \
+        die "Missing curated accession list: ${SELECTED_ACCESSIONS}"
 
 
-    for FNA in "${RB_GENOMES[@]}"; do
+    while IFS= read -r ACC || [[ -n "${ACC}" ]]; do
 
+        ACC="${ACC//$'\r'/}"
+        [[ -z "${ACC}" ]] && continue
 
-        ACC="$(basename "${FNA}" .fna)"
+        FNA="${ROOT}/02_genomes/${ACC}.fna"
+
+        [[ -s "${FNA}" ]] || \
+            die "Genome FASTA missing for curated accession: ${ACC}"
 
 
         GENOME_DONE="${STATE}/11_exact_${ACC}.done"
@@ -2629,7 +2655,7 @@ if ! step_done "11_exact_Vfm26_search"; then
         touch "${GENOME_DONE}"
 
 
-  done < "${SELECTED_ACCESSIONS}"
+    done < "${SELECTED_ACCESSIONS}"
 
     mark_done "11_exact_Vfm26_search"
 
