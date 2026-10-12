@@ -1118,8 +1118,7 @@ fi
 
 # ============================================================
 # STEP 06
-# LOCATE THE EXPERIMENTAL Psol EMSA PROBE RELATIVE TO solA
-# IN D. SOLANI D s0432-1
+# LOCATE EXPERIMENTAL Psol EMSA PROBE RELATIVE TO REAL solA
 # ============================================================
 
 if [[ ! -f "$STATE/06_locate_probe_relative_to_solA.done" ]]
@@ -1134,8 +1133,9 @@ then
 
     GB="$REF/Dsolani_Ds0432_1_CP017453.1.gb"
 
+
     # --------------------------------------------------------
-    # Download annotated GenBank record if needed
+    # Get annotated GenBank record if absent
     # --------------------------------------------------------
 
     if [[ ! -s "$GB" ]]
@@ -1151,7 +1151,6 @@ then
             --retry 3 \
             "$URL" \
             -o "$GB"
-
     fi
 
 
@@ -1174,7 +1173,7 @@ candidate_out = Path(sys.argv[4])
 
 
 # ============================================================
-# READ EMSA PROBE COORDINATES
+# EMSA PROBE
 # ============================================================
 
 with open(probe_file) as fh:
@@ -1185,23 +1184,29 @@ probe_end   = int(probe["amplicon_end"])
 
 
 print()
-print("Experimental EMSA probe:")
-print(f"{probe_start}-{probe_end}")
-print(f"Length: {probe_end-probe_start+1} bp")
+print("Experimental Psol EMSA probe:")
+print(f"  {probe_start}-{probe_end}")
+print(f"  length = {probe_end-probe_start+1} bp")
 print()
 
 
 # ============================================================
-# SIMPLE GENBANK FEATURE PARSER
+# GENBANK PARSER
+#
+# IMPORTANT:
+# Origin-spanning join()/order() CDS features are skipped.
+# The previous parser incorrectly converted such a feature
+# into 1..whole_chromosome.
 # ============================================================
 
 features = []
 
 current = None
 current_qualifier = None
+in_features = False
 
 
-def finish_feature():
+def save_current():
 
     global current
 
@@ -1213,8 +1218,6 @@ def finish_feature():
 
 with open(gb_file) as fh:
 
-    in_features = False
-
     for raw in fh:
 
         if raw.startswith("FEATURES"):
@@ -1222,29 +1225,28 @@ with open(gb_file) as fh:
             continue
 
         if raw.startswith("ORIGIN"):
-            finish_feature()
+            save_current()
             break
 
         if not in_features:
             continue
 
 
+        key = raw[5:21].strip()
+        text = raw[21:].rstrip()
+
+
         # ----------------------------------------------------
         # New feature
-        # GenBank feature key occupies columns 6-20
         # ----------------------------------------------------
-
-        key = raw[5:21].strip()
-        location = raw[21:].strip()
-
 
         if key:
 
-            finish_feature()
+            save_current()
 
             current = {
                 "type": key,
-                "location": location,
+                "location": text.strip(),
                 "qualifiers": {}
             }
 
@@ -1256,28 +1258,28 @@ with open(gb_file) as fh:
             continue
 
 
-        text = raw[21:].strip()
+        stripped = text.strip()
 
 
         # ----------------------------------------------------
-        # New qualifier
+        # Qualifier
         # ----------------------------------------------------
 
-        if text.startswith("/"):
+        if stripped.startswith("/"):
 
-            if "=" in text:
+            if "=" in stripped:
 
-                q, value = text[1:].split("=", 1)
+                q, value = stripped[1:].split("=", 1)
 
-                value = value.strip().strip('"')
-
-                current["qualifiers"][q] = value
+                current["qualifiers"][q] = (
+                    value.strip().strip('"')
+                )
 
                 current_qualifier = q
 
             else:
 
-                q = text[1:]
+                q = stripped[1:]
 
                 current["qualifiers"][q] = ""
 
@@ -1287,28 +1289,38 @@ with open(gb_file) as fh:
 
 
         # ----------------------------------------------------
-        # Continuation of qualifier
+        # Location continuation BEFORE qualifiers
         # ----------------------------------------------------
 
-        if text and current_qualifier:
+        if current_qualifier is None and stripped:
+
+            current["location"] += stripped
+            continue
+
+
+        # ----------------------------------------------------
+        # Qualifier continuation
+        # ----------------------------------------------------
+
+        if current_qualifier is not None and stripped:
 
             old = current["qualifiers"].get(
                 current_qualifier,
                 ""
             )
 
-            text = text.strip().strip('"')
-
             current["qualifiers"][current_qualifier] = (
-                old + " " + text
+                old + " " + stripped.strip('"')
             ).strip()
 
 
 # ============================================================
-# PARSE CDS COORDINATES
+# PARSE ONLY SIMPLE CONTIGUOUS CDS FEATURES
 # ============================================================
 
 cds = []
+
+skipped_complex = 0
 
 
 for f in features:
@@ -1316,22 +1328,60 @@ for f in features:
     if f["type"] != "CDS":
         continue
 
-    loc = f["location"]
 
-    strand = "-1" if loc.startswith("complement") else "+1"
+    loc = f["location"].replace(" ", "")
 
 
-    nums = [
-        int(x)
-        for x in re.findall(r"\d+", loc)
-    ]
+    # --------------------------------------------------------
+    # Do NOT flatten join/order locations
+    # --------------------------------------------------------
 
-    if len(nums) < 2:
+    if "join(" in loc or "order(" in loc:
+
+        skipped_complex += 1
         continue
 
 
-    start = min(nums)
-    end = max(nums)
+    strand = "-"
+
+    if not loc.startswith("complement("):
+        strand = "+"
+
+
+    # Remove complement wrapper and fuzzy markers
+    clean = loc
+
+    if clean.startswith("complement(") and clean.endswith(")"):
+        clean = clean[len("complement("):-1]
+
+    clean = clean.replace("<", "").replace(">", "")
+
+
+    m = re.fullmatch(
+        r"(\d+)\.\.(\d+)",
+        clean
+    )
+
+
+    if not m:
+        continue
+
+
+    start = int(m.group(1))
+    end = int(m.group(2))
+
+
+    if start > end:
+        start, end = end, start
+
+
+    nt_length = end - start + 1
+
+
+    # Must resemble a real CDS
+    if nt_length <= 0:
+        continue
+
 
     q = f["qualifiers"]
 
@@ -1340,19 +1390,25 @@ for f in features:
         "start": start,
         "end": end,
         "strand": strand,
-        "length_nt": end - start + 1,
-        "aa_length_est": (end - start + 1) // 3,
+        "length_nt": nt_length,
+        "aa_length_est": nt_length // 3,
         "locus_tag": q.get("locus_tag", ""),
         "gene": q.get("gene", ""),
         "product": q.get("product", "")
     })
 
 
+print(
+    "Complex origin/join CDS features skipped:",
+    skipped_complex
+)
+
+
 # ============================================================
-# FIND CDS FEATURES NEAR EMSA PROBE
+# CDS FEATURES NEAR THE EMSA PROBE
 # ============================================================
 
-WINDOW = 25000
+WINDOW = 30000
 
 nearby = []
 
@@ -1365,19 +1421,78 @@ for c in cds:
         c["start"] <= probe_end + WINDOW
     ):
 
+        # genomic distance only
         if c["start"] > probe_end:
-            distance = c["start"] - probe_end - 1
+
+            distance = (
+                c["start"] -
+                probe_end -
+                1
+            )
 
         elif c["end"] < probe_start:
-            distance = probe_start - c["end"] - 1
+
+            distance = (
+                probe_start -
+                c["end"] -
+                1
+            )
 
         else:
+
             distance = 0
+
+
+        # ----------------------------------------------------
+        # Is the probe transcriptionally upstream?
+        #
+        # + gene: promoter must be left of CDS
+        # - gene: promoter must be right of CDS
+        # ----------------------------------------------------
+
+        if (
+            c["strand"] == "+"
+            and probe_end < c["start"]
+        ):
+
+            upstream_distance = (
+                c["start"] -
+                probe_end -
+                1
+            )
+
+
+        elif (
+            c["strand"] == "-"
+            and probe_start > c["end"]
+        ):
+
+            upstream_distance = (
+                probe_start -
+                c["end"] -
+                1
+            )
+
+
+        else:
+
+            upstream_distance = None
 
 
         x = dict(c)
 
         x["distance_from_probe_bp"] = distance
+
+        x["probe_is_upstream"] = (
+            upstream_distance is not None
+        )
+
+        x["upstream_distance_bp"] = (
+            upstream_distance
+            if upstream_distance is not None
+            else "NA"
+        )
+
 
         nearby.append(x)
 
@@ -1391,7 +1506,7 @@ nearby.sort(
 
 
 # ============================================================
-# WRITE NEARBY CDS TABLE
+# WRITE NEARBY CDS
 # ============================================================
 
 fields = [
@@ -1401,6 +1516,8 @@ fields = [
     "length_nt",
     "aa_length_est",
     "distance_from_probe_bp",
+    "probe_is_upstream",
+    "upstream_distance_bp",
     "locus_tag",
     "gene",
     "product"
@@ -1423,17 +1540,19 @@ with open(
     writer.writerows(nearby)
 
 
-print("CDS features within ±25 kb of probe:")
 print()
+print("CDS within +/-30 kb:")
+print()
+
 
 for c in nearby:
 
     print(
-        c["start"],
-        c["end"],
+        f"{c['start']}-{c['end']}",
         c["strand"],
         f"{c['aa_length_est']} aa",
-        f"distance={c['distance_from_probe_bp']} bp",
+        f"upstream={c['probe_is_upstream']}",
+        f"upstream_distance={c['upstream_distance_bp']}",
         c["locus_tag"],
         c["gene"],
         c["product"]
@@ -1441,51 +1560,95 @@ for c in nearby:
 
 
 # ============================================================
-# IDENTIFY LIKELY solA
+# IDENTIFY solA
 #
-# SolA is a very large PKS/NRPS protein (~5,000+ aa),
-# so the correct CDS should stand out clearly.
+# Published SolA size ≈ 5358 aa.
+#
+# Require:
+#   4500-6500 aa
+#   probe transcriptionally upstream
+#   probe <= 5000 bp upstream
 # ============================================================
 
-large = [
-    c for c in nearby
-    if c["aa_length_est"] >= 4000
-]
+candidates = []
 
 
-if not large:
+for c in nearby:
 
-    raise RuntimeError(
-        "No >4000-aa CDS found near the experimental "
-        "Psol EMSA probe. Inspect nearby CDS manually."
+    if not (
+        4500 <= c["aa_length_est"] <= 6500
+    ):
+        continue
+
+
+    if not c["probe_is_upstream"]:
+        continue
+
+
+    d = c["upstream_distance_bp"]
+
+
+    if d == "NA" or d > 5000:
+        continue
+
+
+    # Prefer:
+    # 1. closest to expected 5358 aa
+    # 2. closest promoter distance
+
+    score = (
+        abs(c["aa_length_est"] - 5358),
+        d
     )
 
 
-large.sort(
-    key=lambda x: (
-        x["distance_from_probe_bp"],
-        -x["aa_length_est"]
+    candidates.append(
+        (score, c)
     )
+
+
+if not candidates:
+
+    print()
+    print("ERROR:")
+    print(
+        "No realistic ~5358-aa solA candidate was found "
+        "with the EMSA probe upstream."
+    )
+
+    print()
+    print(
+        "This is intentionally stopping rather than "
+        "guessing the wrong gene."
+    )
+
+    raise SystemExit(1)
+
+
+candidates.sort(
+    key=lambda x: x[0]
 )
 
 
-solA = large[0]
+solA = candidates[0][1]
 
 
 # ============================================================
-# CALCULATE PROBE POSITION RELATIVE TO solA START CODON
+# POSITION OF EMSA PROBE RELATIVE TO solA START CODON
 #
-# 0 = first nucleotide of solA CDS
-# negative = upstream
+# CDS first nucleotide = position 0
+# upstream positions = negative
 # ============================================================
 
-if solA["strand"] == "+1":
+if solA["strand"] == "+":
 
     rel1 = probe_start - solA["start"]
     rel2 = probe_end   - solA["start"]
 
+
 else:
 
+    # On minus strand, start codon is at genomic CDS end.
     rel1 = solA["end"] - probe_start
     rel2 = solA["end"] - probe_end
 
@@ -1494,9 +1657,20 @@ rel_start = min(rel1, rel2)
 rel_end   = max(rel1, rel2)
 
 
+# ============================================================
+# SANITY CHECK
+# ============================================================
+
+if rel_end >= 0:
+
+    raise RuntimeError(
+        "Probe is not fully upstream of selected solA."
+    )
+
+
 print()
 print("============================================================")
-print("LIKELY solA")
+print("REALISTIC solA CANDIDATE")
 print("============================================================")
 print()
 
@@ -1515,26 +1689,26 @@ print(
 )
 
 print(
-    "Approximate protein length:",
+    "Protein length:",
     solA["aa_length_est"],
     "aa"
 )
 
 print(
-    "Distance from EMSA probe:",
-    solA["distance_from_probe_bp"],
+    "Probe-to-CDS distance:",
+    solA["upstream_distance_bp"],
     "bp"
 )
 
 print()
 print(
-    "Experimental probe relative to solA start codon:",
-    f"{rel_start} to {rel_end} bp"
+    "150-bp EMSA probe relative to solA ATG:",
+    f"{rel_start} to {rel_end}"
 )
 
 
 # ============================================================
-# WRITE solA RESULT
+# WRITE RESULT
 # ============================================================
 
 with open(
@@ -1571,7 +1745,7 @@ with open(
         f"{probe_end}\t"
         f"{rel_start}\t"
         f"{rel_end}\t"
-        f"{solA['distance_from_probe_bp']}\n"
+        f"{solA['upstream_distance_bp']}\n"
     )
 
 
