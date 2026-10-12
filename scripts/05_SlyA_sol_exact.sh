@@ -1114,3 +1114,480 @@ else
     echo ">>> STEP 05 already completed — skipping"
 
 fi
+
+
+# ============================================================
+# STEP 06
+# LOCATE THE EXPERIMENTAL Psol EMSA PROBE RELATIVE TO solA
+# IN D. SOLANI D s0432-1
+# ============================================================
+
+if [[ ! -f "$STATE/06_locate_probe_relative_to_solA.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 06: Locating Psol EMSA probe relative to solA"
+    echo "============================================================"
+    echo
+
+
+    GB="$REF/Dsolani_Ds0432_1_CP017453.1.gb"
+
+    # --------------------------------------------------------
+    # Download annotated GenBank record if needed
+    # --------------------------------------------------------
+
+    if [[ ! -s "$GB" ]]
+    then
+
+        echo "Downloading annotated CP017453.1 GenBank record..."
+
+        URL="https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=CP017453.1&rettype=gbwithparts&retmode=text"
+
+        curl \
+            -L \
+            --fail \
+            --retry 3 \
+            "$URL" \
+            -o "$GB"
+
+    fi
+
+
+    python - \
+        "$GB" \
+        "$PROBE/Psol_EMSA_probe_coordinates.tsv" \
+        "$RESULTS/Dsolani_probe_nearby_CDS.tsv" \
+        "$RESULTS/Dsolani_solA_candidate.tsv" <<'PY'
+
+import sys
+import csv
+import re
+from pathlib import Path
+
+
+gb_file = Path(sys.argv[1])
+probe_file = Path(sys.argv[2])
+nearby_out = Path(sys.argv[3])
+candidate_out = Path(sys.argv[4])
+
+
+# ============================================================
+# READ EMSA PROBE COORDINATES
+# ============================================================
+
+with open(probe_file) as fh:
+    probe = next(csv.DictReader(fh, delimiter="\t"))
+
+probe_start = int(probe["amplicon_start"])
+probe_end   = int(probe["amplicon_end"])
+
+
+print()
+print("Experimental EMSA probe:")
+print(f"{probe_start}-{probe_end}")
+print(f"Length: {probe_end-probe_start+1} bp")
+print()
+
+
+# ============================================================
+# SIMPLE GENBANK FEATURE PARSER
+# ============================================================
+
+features = []
+
+current = None
+current_qualifier = None
+
+
+def finish_feature():
+
+    global current
+
+    if current is not None:
+        features.append(current)
+
+    current = None
+
+
+with open(gb_file) as fh:
+
+    in_features = False
+
+    for raw in fh:
+
+        if raw.startswith("FEATURES"):
+            in_features = True
+            continue
+
+        if raw.startswith("ORIGIN"):
+            finish_feature()
+            break
+
+        if not in_features:
+            continue
+
+
+        # ----------------------------------------------------
+        # New feature
+        # GenBank feature key occupies columns 6-20
+        # ----------------------------------------------------
+
+        key = raw[5:21].strip()
+        location = raw[21:].strip()
+
+
+        if key:
+
+            finish_feature()
+
+            current = {
+                "type": key,
+                "location": location,
+                "qualifiers": {}
+            }
+
+            current_qualifier = None
+            continue
+
+
+        if current is None:
+            continue
+
+
+        text = raw[21:].strip()
+
+
+        # ----------------------------------------------------
+        # New qualifier
+        # ----------------------------------------------------
+
+        if text.startswith("/"):
+
+            if "=" in text:
+
+                q, value = text[1:].split("=", 1)
+
+                value = value.strip().strip('"')
+
+                current["qualifiers"][q] = value
+
+                current_qualifier = q
+
+            else:
+
+                q = text[1:]
+
+                current["qualifiers"][q] = ""
+
+                current_qualifier = q
+
+            continue
+
+
+        # ----------------------------------------------------
+        # Continuation of qualifier
+        # ----------------------------------------------------
+
+        if text and current_qualifier:
+
+            old = current["qualifiers"].get(
+                current_qualifier,
+                ""
+            )
+
+            text = text.strip().strip('"')
+
+            current["qualifiers"][current_qualifier] = (
+                old + " " + text
+            ).strip()
+
+
+# ============================================================
+# PARSE CDS COORDINATES
+# ============================================================
+
+cds = []
+
+
+for f in features:
+
+    if f["type"] != "CDS":
+        continue
+
+    loc = f["location"]
+
+    strand = "-1" if loc.startswith("complement") else "+1"
+
+
+    nums = [
+        int(x)
+        for x in re.findall(r"\d+", loc)
+    ]
+
+    if len(nums) < 2:
+        continue
+
+
+    start = min(nums)
+    end = max(nums)
+
+    q = f["qualifiers"]
+
+
+    cds.append({
+        "start": start,
+        "end": end,
+        "strand": strand,
+        "length_nt": end - start + 1,
+        "aa_length_est": (end - start + 1) // 3,
+        "locus_tag": q.get("locus_tag", ""),
+        "gene": q.get("gene", ""),
+        "product": q.get("product", "")
+    })
+
+
+# ============================================================
+# FIND CDS FEATURES NEAR EMSA PROBE
+# ============================================================
+
+WINDOW = 25000
+
+nearby = []
+
+
+for c in cds:
+
+    if (
+        c["end"] >= probe_start - WINDOW
+        and
+        c["start"] <= probe_end + WINDOW
+    ):
+
+        if c["start"] > probe_end:
+            distance = c["start"] - probe_end - 1
+
+        elif c["end"] < probe_start:
+            distance = probe_start - c["end"] - 1
+
+        else:
+            distance = 0
+
+
+        x = dict(c)
+
+        x["distance_from_probe_bp"] = distance
+
+        nearby.append(x)
+
+
+nearby.sort(
+    key=lambda x: (
+        x["start"],
+        x["end"]
+    )
+)
+
+
+# ============================================================
+# WRITE NEARBY CDS TABLE
+# ============================================================
+
+fields = [
+    "start",
+    "end",
+    "strand",
+    "length_nt",
+    "aa_length_est",
+    "distance_from_probe_bp",
+    "locus_tag",
+    "gene",
+    "product"
+]
+
+
+with open(
+    nearby_out,
+    "w",
+    newline=""
+) as out:
+
+    writer = csv.DictWriter(
+        out,
+        delimiter="\t",
+        fieldnames=fields
+    )
+
+    writer.writeheader()
+    writer.writerows(nearby)
+
+
+print("CDS features within ±25 kb of probe:")
+print()
+
+for c in nearby:
+
+    print(
+        c["start"],
+        c["end"],
+        c["strand"],
+        f"{c['aa_length_est']} aa",
+        f"distance={c['distance_from_probe_bp']} bp",
+        c["locus_tag"],
+        c["gene"],
+        c["product"]
+    )
+
+
+# ============================================================
+# IDENTIFY LIKELY solA
+#
+# SolA is a very large PKS/NRPS protein (~5,000+ aa),
+# so the correct CDS should stand out clearly.
+# ============================================================
+
+large = [
+    c for c in nearby
+    if c["aa_length_est"] >= 4000
+]
+
+
+if not large:
+
+    raise RuntimeError(
+        "No >4000-aa CDS found near the experimental "
+        "Psol EMSA probe. Inspect nearby CDS manually."
+    )
+
+
+large.sort(
+    key=lambda x: (
+        x["distance_from_probe_bp"],
+        -x["aa_length_est"]
+    )
+)
+
+
+solA = large[0]
+
+
+# ============================================================
+# CALCULATE PROBE POSITION RELATIVE TO solA START CODON
+#
+# 0 = first nucleotide of solA CDS
+# negative = upstream
+# ============================================================
+
+if solA["strand"] == "+1":
+
+    rel1 = probe_start - solA["start"]
+    rel2 = probe_end   - solA["start"]
+
+else:
+
+    rel1 = solA["end"] - probe_start
+    rel2 = solA["end"] - probe_end
+
+
+rel_start = min(rel1, rel2)
+rel_end   = max(rel1, rel2)
+
+
+print()
+print("============================================================")
+print("LIKELY solA")
+print("============================================================")
+print()
+
+print("Locus tag:", solA["locus_tag"])
+print("Gene:", solA["gene"])
+print("Product:", solA["product"])
+
+print(
+    "CDS:",
+    f"{solA['start']}-{solA['end']}"
+)
+
+print(
+    "Strand:",
+    solA["strand"]
+)
+
+print(
+    "Approximate protein length:",
+    solA["aa_length_est"],
+    "aa"
+)
+
+print(
+    "Distance from EMSA probe:",
+    solA["distance_from_probe_bp"],
+    "bp"
+)
+
+print()
+print(
+    "Experimental probe relative to solA start codon:",
+    f"{rel_start} to {rel_end} bp"
+)
+
+
+# ============================================================
+# WRITE solA RESULT
+# ============================================================
+
+with open(
+    candidate_out,
+    "w"
+) as out:
+
+    out.write(
+        "reference\t"
+        "locus_tag\t"
+        "gene\t"
+        "product\t"
+        "solA_start\t"
+        "solA_end\t"
+        "strand\t"
+        "protein_length_est_aa\t"
+        "probe_start\t"
+        "probe_end\t"
+        "probe_relative_start_bp\t"
+        "probe_relative_end_bp\t"
+        "distance_probe_to_CDS_bp\n"
+    )
+
+    out.write(
+        "Dsolani_Ds0432_1\t"
+        f"{solA['locus_tag']}\t"
+        f"{solA['gene']}\t"
+        f"{solA['product']}\t"
+        f"{solA['start']}\t"
+        f"{solA['end']}\t"
+        f"{solA['strand']}\t"
+        f"{solA['aa_length_est']}\t"
+        f"{probe_start}\t"
+        f"{probe_end}\t"
+        f"{rel_start}\t"
+        f"{rel_end}\t"
+        f"{solA['distance_from_probe_bp']}\n"
+    )
+
+
+print()
+print("Written:")
+print(nearby_out)
+print(candidate_out)
+
+PY
+
+
+    date > "$STATE/06_locate_probe_relative_to_solA.done"
+
+else
+
+    echo
+    echo ">>> STEP 06 already completed — skipping"
+
+fi
