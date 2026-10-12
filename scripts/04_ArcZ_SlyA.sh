@@ -426,96 +426,94 @@ fi
 ARCZ_CM="${REFERENCE}/${ARCZ_RFAM}.cm"
 
 
-# ============================================================
-# STEP 03
-# SEARCH FOR ArcZ USING RFAM / INFERNAL
-# ============================================================
-
-if ! step_done "03_ArcZ_cmsearch"; then
-
-    echo
-    echo "============================================================"
-    echo "STEP 03: Searching for ArcZ"
-    echo "============================================================"
-    echo
-
-
     # --------------------------------------------------------
     # D. solani MK10
+    #
+    # First use the Rfam gathering threshold.
+    #
+    # MK10 ArcZ is more divergent than the R. badensis ArcZ
+    # homologs and falls below the RF00081 GA threshold.
+    # Therefore, if the strict search returns no hit, perform
+    # a high-sensitivity fallback search and retain only hits
+    # with E <= 1e-5.
     # --------------------------------------------------------
 
     MK10_DONE="${STATE}/03_ArcZ_Dsolani_MK10.done"
-
 
     if [[ ! -f "${MK10_DONE}" ]]; then
 
         echo "Searching ArcZ in D. solani MK10"
 
+        STRICT_TBL="${RFAM}/Dsolani_MK10.strict.tbl"
+        RELAXED_TBL="${RFAM}/Dsolani_MK10.relaxed.tbl"
+        FINAL_TBL="${RFAM}/Dsolani_MK10.tbl"
+
+        # ----------------------------------------------------
+        # Strict Rfam GA search
+        # ----------------------------------------------------
 
         cmsearch \
             --cpu "${THREADS}" \
             --cut_ga \
-            --tblout "${RFAM}/Dsolani_MK10.tbl" \
+            --tblout "${STRICT_TBL}" \
             "${ARCZ_CM}" \
             "${MK10_FNA}" \
-            > "${RFAM}/Dsolani_MK10.cmsearch.txt"
+            > "${RFAM}/Dsolani_MK10.strict.cmsearch.txt"
 
+        STRICT_HITS=$(
+            grep -vc '^#' "${STRICT_TBL}" || true
+        )
+
+        if [[ "${STRICT_HITS}" -gt 0 ]]; then
+
+            echo "MK10 ArcZ recovered using Rfam GA threshold."
+
+            cp "${STRICT_TBL}" "${FINAL_TBL}"
+
+            echo "strict_Rfam_GA" \
+                > "${RFAM}/Dsolani_MK10.search_mode.txt"
+
+        else
+
+            echo
+            echo "No MK10 ArcZ hit passed the Rfam GA threshold."
+            echo "Running sensitive fallback search (E <= 1e-5)."
+            echo
+
+            cmsearch \
+                --cpu "${THREADS}" \
+                --max \
+                -E 1e-5 \
+                --tblout "${RELAXED_TBL}" \
+                "${ARCZ_CM}" \
+                "${MK10_FNA}" \
+                > "${RFAM}/Dsolani_MK10.relaxed.cmsearch.txt"
+
+            RELAXED_HITS=$(
+                grep -vc '^#' "${RELAXED_TBL}" || true
+            )
+
+            if [[ "${RELAXED_HITS}" -eq 0 ]]; then
+
+                echo "WARNING: No MK10 ArcZ candidate found."
+                cp "${STRICT_TBL}" "${FINAL_TBL}"
+
+            else
+
+                echo "MK10 ArcZ candidate recovered by sensitive search."
+
+                cp "${RELAXED_TBL}" "${FINAL_TBL}"
+
+                echo "relaxed_cmsearch_MAX_E1e-5" \
+                    > "${RFAM}/Dsolani_MK10.search_mode.txt"
+
+            fi
+
+        fi
 
         touch "${MK10_DONE}"
 
     fi
-
-
-    # --------------------------------------------------------
-    # R. badensis genomes
-    # --------------------------------------------------------
-
-    while IFS= read -r ACC || [[ -n "${ACC}" ]]; do
-
-        ACC="${ACC//$'\r'/}"
-
-        [[ -z "${ACC}" ]] && continue
-
-
-        DONE="${STATE}/03_ArcZ_${ACC}.done"
-
-
-        if [[ -f "${DONE}" ]]; then
-
-            echo "${ACC}: ArcZ search done — skipping"
-
-            continue
-
-        fi
-
-
-        echo "Searching ArcZ in ${ACC}"
-
-
-        cmsearch \
-            --cpu "${THREADS}" \
-            --cut_ga \
-            --tblout "${RFAM}/${ACC}.tbl" \
-            "${ARCZ_CM}" \
-            "${RB_GENOME_DIR}/${ACC}.fna" \
-            > "${RFAM}/${ACC}.cmsearch.txt"
-
-
-        touch "${DONE}"
-
-
-    done < "${SELECTED_ACCESSIONS}"
-
-
-    mark_done "03_ArcZ_cmsearch"
-
-else
-
-    echo
-    echo ">>> STEP 03 already completed — skipping"
-
-fi
-
 
 # ============================================================
 # STEP 04
