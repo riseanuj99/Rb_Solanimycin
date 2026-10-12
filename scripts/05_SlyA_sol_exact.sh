@@ -1765,3 +1765,808 @@ else
     echo ">>> STEP 06 already completed — skipping"
 
 fi
+
+# ============================================================
+# STEP 07
+# IDENTIFY SolA HOMOLOGS IN R. BADENSIS
+# AND EXTRACT 600-bp UPSTREAM REGIONS
+# ============================================================
+
+if [[ ! -f "$STATE/07_Rouxiella_solA_upstream.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 07: Finding Rouxiella SolA and extracting upstream DNA"
+    echo "============================================================"
+    echo
+
+
+    RB_BAKTA="/scratch/al98750/Roux/03_annotation/bakta"
+    RB_GENOMES="/scratch/al98750/Roux/02_genomes"
+    ACCESSIONS="/scratch/al98750/Roux/01_NCBI/selected_accessions.txt"
+
+    SOLA_PROT="$REF/Dsolani_Ds0432_1_SolA.faa"
+
+    SOLA_HITS="$RESULTS/Rouxiella_SolA_best_hits.tsv"
+
+    UPSTREAM_FASTA="$RB/Rouxiella_SolA_upstream600.fna"
+
+    UPSTREAM_META="$RESULTS/Rouxiella_SolA_upstream600_metadata.tsv"
+
+
+    # ========================================================
+    # 07A
+    # EXTRACT THE EXPERIMENTALLY RELEVANT D. SOLANI SolA
+    # PROTEIN FROM THE GENBANK RECORD
+    # ========================================================
+
+    if [[ ! -s "$SOLA_PROT" ]]
+    then
+
+        echo "Extracting BJD21_19470 SolA protein from GenBank..."
+
+        python - \
+            "$REF/Dsolani_Ds0432_1_CP017453.1.gb" \
+            "$SOLA_PROT" <<'PY'
+
+import sys
+import re
+from pathlib import Path
+
+
+gb = Path(sys.argv[1])
+out = Path(sys.argv[2])
+
+TARGET = "BJD21_19470"
+
+
+text = gb.read_text()
+
+
+# Split GenBank FEATURES into individual feature blocks
+m = re.search(
+    r"\nFEATURES\s+Location/Qualifiers\n(.*?)\nORIGIN",
+    text,
+    flags=re.S
+)
+
+if not m:
+    raise RuntimeError("Could not locate FEATURES section")
+
+
+features = re.split(
+    r"\n(?=     \S)",
+    m.group(1)
+)
+
+
+target = None
+
+
+for block in features:
+
+    if "/locus_tag=\"%s\"" % TARGET not in block:
+        continue
+
+    if not block.lstrip().startswith("CDS"):
+        continue
+
+    target = block
+    break
+
+
+if target is None:
+    raise RuntimeError(
+        f"Could not find CDS {TARGET}"
+    )
+
+
+tm = re.search(
+    r'/translation="([^"]+)"',
+    target,
+    flags=re.S
+)
+
+
+if not tm:
+    raise RuntimeError(
+        "Translation qualifier missing for SolA"
+    )
+
+
+protein = re.sub(
+    r"\s+",
+    "",
+    tm.group(1)
+)
+
+
+print("SolA locus:", TARGET)
+print("Protein length:", len(protein), "aa")
+
+
+if not (5300 <= len(protein) <= 5400):
+
+    raise RuntimeError(
+        f"Unexpected SolA length: {len(protein)} aa"
+    )
+
+
+with open(out, "w") as fh:
+
+    fh.write(
+        f">Dsolani_Ds0432_1_SolA|{TARGET}\n"
+    )
+
+    for i in range(0, len(protein), 70):
+
+        fh.write(
+            protein[i:i+70] + "\n"
+        )
+
+
+print("Written:")
+print(out)
+
+PY
+
+    fi
+
+
+    # ========================================================
+    # 07B
+    # BLAST D. SOLANI SolA AGAINST EACH R. BADENSIS PROTEOME
+    # ========================================================
+
+    echo -e \
+"genome\tstrain_label\tsubject\tpident\talignment_length\tquery_length\tsubject_length\tqcov_pct\tevalue\tbitscore" \
+    > "$SOLA_HITS"
+
+
+    while read -r ACC
+    do
+
+        [[ -z "$ACC" ]] && continue
+
+
+        DIR="$RB_BAKTA/$ACC"
+
+        FAA=$(find "$DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name "*.faa" \
+            | head -1)
+
+
+        if [[ -z "${FAA:-}" ]]
+        then
+
+            echo "WARNING: no FAA for $ACC"
+            continue
+
+        fi
+
+
+        echo
+        echo "Searching SolA in:"
+        echo "$ACC"
+
+
+        RAW="$TMP/${ACC}_SolA_blastp.tsv"
+
+
+        blastp \
+            -query "$SOLA_PROT" \
+            -subject "$FAA" \
+            -evalue 1e-20 \
+            -max_target_seqs 10 \
+            -num_threads "$THREADS" \
+            -outfmt \
+'6 sseqid pident length qlen slen qcovs evalue bitscore' \
+            > "$RAW"
+
+
+        python - \
+            "$ACC" \
+            "$RAW" \
+            "$SOLA_HITS" <<'PY'
+
+import sys
+from pathlib import Path
+
+
+acc = sys.argv[1]
+raw = Path(sys.argv[2])
+out = Path(sys.argv[3])
+
+
+LABELS = {
+
+    "GCF_020740305.1":
+        "R_badensis_20GA0316",
+
+    "GCF_011067265.1":
+        "R_badensis_SER3",
+
+    "GCF_002093665.1":
+        "R_badensis_DSM100043"
+}
+
+
+label = LABELS.get(
+    acc,
+    "R_badensis"
+)
+
+
+hits = []
+
+
+if raw.exists():
+
+    for line in raw.read_text().splitlines():
+
+        if not line.strip():
+            continue
+
+        p = line.split("\t")
+
+        hits.append({
+
+            "subject": p[0],
+
+            "pident": float(p[1]),
+
+            "alignment_length": int(p[2]),
+
+            "query_length": int(p[3]),
+
+            "subject_length": int(p[4]),
+
+            "qcov": float(p[5]),
+
+            "evalue": p[6],
+
+            "bitscore": float(p[7])
+
+        })
+
+
+if not hits:
+
+    print(
+        f"WARNING: no SolA hit for {acc}"
+    )
+
+    raise SystemExit(0)
+
+
+# Prefer:
+#   high query coverage
+#   high bitscore
+#   protein length close to D. solani SolA
+
+hits.sort(
+    key=lambda h: (
+        h["qcov"],
+        h["bitscore"],
+        -abs(h["subject_length"] - 5359)
+    ),
+    reverse=True
+)
+
+
+h = hits[0]
+
+
+with open(out, "a") as fh:
+
+    fh.write(
+        f"{acc}\t"
+        f"{label}\t"
+        f"{h['subject']}\t"
+        f"{h['pident']:.2f}\t"
+        f"{h['alignment_length']}\t"
+        f"{h['query_length']}\t"
+        f"{h['subject_length']}\t"
+        f"{h['qcov']:.2f}\t"
+        f"{h['evalue']}\t"
+        f"{h['bitscore']:.1f}\n"
+    )
+
+PY
+
+
+    done < "$ACCESSIONS"
+
+
+    # ========================================================
+    # 07C
+    # MAP EACH SolA HIT BACK TO ITS GENOMIC COORDINATES
+    # AND EXTRACT EXACTLY 600 bp UPSTREAM
+    # ========================================================
+
+    python - \
+        "$SOLA_HITS" \
+        "$RB_BAKTA" \
+        "$RB_GENOMES" \
+        "$UPSTREAM_FASTA" \
+        "$UPSTREAM_META" <<'PY'
+
+import sys
+import csv
+from pathlib import Path
+
+
+hits_file = Path(sys.argv[1])
+bakta_root = Path(sys.argv[2])
+genome_root = Path(sys.argv[3])
+fasta_out = Path(sys.argv[4])
+meta_out = Path(sys.argv[5])
+
+UPSTREAM = 600
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def read_fasta(path):
+
+    records = {}
+
+    name = None
+    seq = []
+
+
+    for line in path.read_text().splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith(">"):
+
+            if name is not None:
+                records[name] = "".join(seq).upper()
+
+            name = line[1:].split()[0]
+            seq = []
+
+        else:
+
+            seq.append(line)
+
+
+    if name is not None:
+        records[name] = "".join(seq).upper()
+
+
+    return records
+
+
+def rc(seq):
+
+    return seq.translate(
+        str.maketrans(
+            "ACGTNacgtn",
+            "TGCANtgcan"
+        )
+    )[::-1]
+
+
+def parse_attributes(text):
+
+    d = {}
+
+    for item in text.split(";"):
+
+        if "=" in item:
+
+            k, v = item.split("=", 1)
+
+            d[k] = v
+
+    return d
+
+
+def build_gff_index(path):
+
+    index = {}
+
+
+    with open(path) as fh:
+
+        for line in fh:
+
+            if line.startswith("#"):
+                continue
+
+            p = line.rstrip().split("\t")
+
+            if len(p) != 9:
+                continue
+
+            if p[2] != "CDS":
+                continue
+
+
+            a = parse_attributes(
+                p[8]
+            )
+
+
+            aliases = {
+
+                a.get("ID"),
+                a.get("Name"),
+                a.get("locus_tag"),
+                a.get("gene")
+
+            }
+
+
+            aliases |= {
+
+                x.replace("cds-", "")
+
+                for x in list(aliases)
+
+                if x
+
+            }
+
+
+            rec = {
+
+                "contig": p[0],
+
+                "start": int(p[3]),
+
+                "end": int(p[4]),
+
+                "strand": p[6],
+
+                "product": a.get(
+                    "product",
+                    ""
+                )
+
+            }
+
+
+            for alias in aliases:
+
+                if alias:
+                    index[alias] = rec
+
+
+    return index
+
+
+# ============================================================
+# PROCESS SolA HITS
+# ============================================================
+
+rows = []
+sequences = []
+
+
+with open(hits_file) as fh:
+
+    reader = csv.DictReader(
+        fh,
+        delimiter="\t"
+    )
+
+
+    for h in reader:
+
+        genome = h["genome"]
+        subject = h["subject"]
+
+
+        # ----------------------------------------------------
+        # Locate GFF
+        # ----------------------------------------------------
+
+        gff_files = list(
+            (bakta_root / genome).glob(
+                "*.gff3"
+            )
+        )
+
+
+        if not gff_files:
+
+            print(
+                "WARNING: no GFF:",
+                genome
+            )
+
+            continue
+
+
+        index = build_gff_index(
+            gff_files[0]
+        )
+
+
+        rec = index.get(subject)
+
+
+        if rec is None:
+
+            rec = index.get(
+                subject.replace(
+                    "cds-",
+                    ""
+                )
+            )
+
+
+        if rec is None:
+
+            print(
+                "WARNING: could not map SolA:",
+                genome,
+                subject
+            )
+
+            continue
+
+
+        # ----------------------------------------------------
+        # Genome FASTA
+        # ----------------------------------------------------
+
+        genome_file = (
+            genome_root /
+            f"{genome}.fna"
+        )
+
+
+        if not genome_file.exists():
+
+            matches = list(
+                genome_root.glob(
+                    f"{genome}*.fna"
+                )
+            )
+
+            if not matches:
+
+                print(
+                    "WARNING: no genome FASTA:",
+                    genome
+                )
+
+                continue
+
+            genome_file = matches[0]
+
+
+        chroms = read_fasta(
+            genome_file
+        )
+
+
+        contig = rec["contig"]
+
+
+        if contig not in chroms:
+
+            print(
+                "WARNING: contig missing:",
+                genome,
+                contig
+            )
+
+            continue
+
+
+        chrom = chroms[contig]
+
+        start = rec["start"]
+        end = rec["end"]
+        strand = rec["strand"]
+
+
+        # ----------------------------------------------------
+        # Extract upstream in transcriptional orientation
+        #
+        # Result always runs:
+        #
+        # -600 ................. -1
+        #                  SolA ATG
+        # ----------------------------------------------------
+
+        if strand == "+":
+
+            left = max(
+                1,
+                start - UPSTREAM
+            )
+
+            right = start - 1
+
+            seq = chrom[
+                left - 1:right
+            ]
+
+
+        elif strand == "-":
+
+            left = end + 1
+
+            right = min(
+                len(chrom),
+                end + UPSTREAM
+            )
+
+            seq = rc(
+                chrom[
+                    left - 1:right
+                ]
+            )
+
+
+        else:
+
+            continue
+
+
+        actual_upstream = len(seq)
+
+
+        sequences.append(
+            (
+                genome,
+                seq
+            )
+        )
+
+
+        rows.append({
+
+            "genome": genome,
+
+            "strain_label":
+                h["strain_label"],
+
+            "solA_subject":
+                subject,
+
+            "solA_contig":
+                contig,
+
+            "solA_start":
+                start,
+
+            "solA_end":
+                end,
+
+            "solA_strand":
+                strand,
+
+            "solA_protein_length":
+                h["subject_length"],
+
+            "SolA_identity_to_Dsolani_pct":
+                h["pident"],
+
+            "SolA_query_coverage_pct":
+                h["qcov_pct"],
+
+            "upstream_length":
+                actual_upstream,
+
+            "upstream_genomic_left":
+                left,
+
+            "upstream_genomic_right":
+                right
+
+        })
+
+
+# ============================================================
+# WRITE FASTA
+# ============================================================
+
+with open(
+    fasta_out,
+    "w"
+) as out:
+
+    for genome, seq in sequences:
+
+        out.write(
+            f">{genome}\n"
+        )
+
+        for i in range(
+            0,
+            len(seq),
+            70
+        ):
+
+            out.write(
+                seq[i:i+70]
+                + "\n"
+            )
+
+
+# ============================================================
+# WRITE METADATA
+# ============================================================
+
+fields = [
+
+    "genome",
+    "strain_label",
+    "solA_subject",
+    "solA_contig",
+    "solA_start",
+    "solA_end",
+    "solA_strand",
+    "solA_protein_length",
+    "SolA_identity_to_Dsolani_pct",
+    "SolA_query_coverage_pct",
+    "upstream_length",
+    "upstream_genomic_left",
+    "upstream_genomic_right"
+
+]
+
+
+with open(
+    meta_out,
+    "w",
+    newline=""
+) as out:
+
+    writer = csv.DictWriter(
+        out,
+        delimiter="\t",
+        fieldnames=fields
+    )
+
+    writer.writeheader()
+    writer.writerows(rows)
+
+
+print()
+print(
+    "SolA upstream sequences extracted:",
+    len(sequences)
+)
+
+print()
+print("Written:")
+print(fasta_out)
+print(meta_out)
+
+PY
+
+
+    echo
+    echo "============================================================"
+    echo "Rouxiella SolA summary"
+    echo "============================================================"
+    echo
+
+    column -t -s $'\t' \
+        "$UPSTREAM_META"
+
+
+    date > "$STATE/07_Rouxiella_solA_upstream.done"
+
+else
+
+    echo
+    echo ">>> STEP 07 already completed — skipping"
+
+fi
