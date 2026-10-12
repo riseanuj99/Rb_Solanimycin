@@ -848,3 +848,269 @@ echo "$PROBE/Psol_EMSA_probe_coordinates.tsv"
 
 echo
 echo "Finished: $(date)"
+
+
+
+# ============================================================
+# STEP 05
+# SEARCH THE EXACT 150-bp D. SOLANI Psol EMSA FRAGMENT
+# ACROSS ALL 17 R. BADENSIS GENOMES
+# ============================================================
+
+if [[ ! -f "$STATE/05_Rouxiella_Psol_search.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 05: Searching exact Psol EMSA region in R. badensis"
+    echo "============================================================"
+    echo
+
+
+    RB_GENOMES="/scratch/al98750/Roux/02_genomes"
+    ACCESSIONS="/scratch/al98750/Roux/01_NCBI/selected_accessions.txt"
+
+    QUERY="$PROBE/Psol_EMSA_probe.fna"
+
+    RAW="$RB/Psol_EMSA_all_hits.tsv"
+    BEST="$RESULTS/Psol_EMSA_best_hit_per_genome.tsv"
+
+
+    # --------------------------------------------------------
+    # Header
+    # --------------------------------------------------------
+
+    echo -e \
+"genome\tstrain_label\tcontig\tpident\talignment_length\tquery_length\tqcov_pct\tmismatch\tgapopen\tqstart\tqend\tsstart\tsend\tstrand\tevalue\tbitscore" \
+    > "$BEST"
+
+
+    while read -r ACC
+    do
+
+        [[ -z "$ACC" ]] && continue
+
+
+        GENOME="$RB_GENOMES/${ACC}.fna"
+
+
+        if [[ ! -s "$GENOME" ]]
+        then
+
+            echo "WARNING: genome not found:"
+            echo "$GENOME"
+
+            continue
+
+        fi
+
+
+        echo
+        echo "Searching:"
+        echo "$ACC"
+
+
+        DB="$TMP/${ACC}_Psol_db"
+
+        makeblastdb \
+            -in "$GENOME" \
+            -dbtype nucl \
+            -out "$DB" \
+            > /dev/null
+
+
+        HITFILE="$TMP/${ACC}_Psol_hits.tsv"
+
+
+        blastn \
+            -task blastn \
+            -query "$QUERY" \
+            -db "$DB" \
+            -evalue 10 \
+            -word_size 7 \
+            -dust no \
+            -reward 1 \
+            -penalty -2 \
+            -gapopen 2 \
+            -gapextend 2 \
+            -num_threads "$THREADS" \
+            -outfmt \
+'6 sseqid pident length qlen mismatch gapopen qstart qend sstart send sstrand evalue bitscore' \
+            > "$HITFILE"
+
+
+        # ----------------------------------------------------
+        # Add accession to all raw results
+        # ----------------------------------------------------
+
+        if [[ -s "$HITFILE" ]]
+        then
+
+            awk -v G="$ACC" \
+                'BEGIN{OFS="\t"} {print G,$0}' \
+                "$HITFILE" \
+                >> "$RAW"
+
+        fi
+
+
+        # ----------------------------------------------------
+        # Take best hit:
+        #
+        # prioritize:
+        #   1. query coverage
+        #   2. bitscore
+        #   3. percent identity
+        # ----------------------------------------------------
+
+        python - \
+            "$ACC" \
+            "$HITFILE" \
+            "$BEST" <<'PY'
+
+import sys
+from pathlib import Path
+
+
+acc = sys.argv[1]
+hitfile = Path(sys.argv[2])
+outfile = Path(sys.argv[3])
+
+
+LABELS = {
+    "GCF_020740305.1":
+        "R_badensis_20GA0316",
+
+    "GCF_011067265.1":
+        "R_badensis_SER3",
+
+    "GCF_002093665.1":
+        "R_badensis_DSM100043"
+}
+
+
+label = LABELS.get(
+    acc,
+    "R_badensis"
+)
+
+
+hits = []
+
+
+if hitfile.exists():
+
+    for line in hitfile.read_text().splitlines():
+
+        if not line.strip():
+            continue
+
+        p = line.split("\t")
+
+        qlen = int(p[3])
+        alnlen = int(p[2])
+
+        qcov = (
+            100.0 * alnlen / qlen
+        )
+
+        hits.append({
+
+            "contig": p[0],
+
+            "pident": float(p[1]),
+
+            "length": alnlen,
+
+            "qlen": qlen,
+
+            "qcov": qcov,
+
+            "mismatch": int(p[4]),
+
+            "gapopen": int(p[5]),
+
+            "qstart": int(p[6]),
+
+            "qend": int(p[7]),
+
+            "sstart": int(p[8]),
+
+            "send": int(p[9]),
+
+            "strand": p[10],
+
+            "evalue": p[11],
+
+            "bitscore": float(p[12])
+
+        })
+
+
+with open(outfile, "a") as out:
+
+    if not hits:
+
+        out.write(
+            f"{acc}\t"
+            f"{label}\t"
+            f"NO_HIT\t"
+            f"NA\tNA\t150\t0\t"
+            f"NA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\tNA\n"
+        )
+
+    else:
+
+        hits.sort(
+            key=lambda h: (
+                h["qcov"],
+                h["bitscore"],
+                h["pident"]
+            ),
+            reverse=True
+        )
+
+        h = hits[0]
+
+        out.write(
+            f"{acc}\t"
+            f"{label}\t"
+            f"{h['contig']}\t"
+            f"{h['pident']:.2f}\t"
+            f"{h['length']}\t"
+            f"{h['qlen']}\t"
+            f"{h['qcov']:.2f}\t"
+            f"{h['mismatch']}\t"
+            f"{h['gapopen']}\t"
+            f"{h['qstart']}\t"
+            f"{h['qend']}\t"
+            f"{h['sstart']}\t"
+            f"{h['send']}\t"
+            f"{h['strand']}\t"
+            f"{h['evalue']}\t"
+            f"{h['bitscore']:.1f}\n"
+        )
+
+PY
+
+
+    done < "$ACCESSIONS"
+
+
+    echo
+    echo "============================================================"
+    echo "Psol EMSA conservation summary"
+    echo "============================================================"
+    echo
+
+    column -t -s $'\t' "$BEST"
+
+
+    date > "$STATE/05_Rouxiella_Psol_search.done"
+
+else
+
+    echo
+    echo ">>> STEP 05 already completed — skipping"
+
+fi
