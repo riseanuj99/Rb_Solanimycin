@@ -1,0 +1,850 @@
+#!/bin/bash
+#SBATCH --job-name=SlyA_sol
+#SBATCH --partition=batch
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=04:00:00
+#SBATCH --output=/scratch/al98750/Roux/logs/SlyA_sol_%j.out
+#SBATCH --error=/scratch/al98750/Roux/logs/SlyA_sol_%j.err
+
+set -euo pipefail
+
+
+# ============================================================
+# OBJECTIVE:
+#
+# Test conservation of the experimentally demonstrated
+# SlyA -> Psol regulatory connection from Dickeya solani
+# D s0432-1 in Rouxiella badensis.
+#
+# Experimental reference:
+#   Dickeya solani D s0432-1
+#   chromosome: CP017453.1
+#
+# Psol EMSA primers from Table S5:
+#
+#   L2256-FAM
+#   GAATTGTTTGGCGCGGATATG
+#
+#   L2257
+#   CACAATTTACGATATAACCAGAATGAAAAATC
+#
+# IMPORTANT:
+# Every step has its own checkpoint under .state/.
+# Completed steps WILL NOT rerun.
+#
+# To rerun one step intentionally:
+#   rm .state/XX_name.done
+#
+# ============================================================
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+ROOT="/scratch/al98750/Roux/09_SlyA_sol_exact"
+
+REF="$ROOT/01_reference"
+PRIMER="$ROOT/02_primer_mapping"
+PROBE="$ROOT/03_Psol_EMSA_probe"
+RB="$ROOT/04_Rouxiella_comparison"
+RESULTS="$ROOT/06_results"
+TMP="$ROOT/tmp"
+STATE="$ROOT/.state"
+
+LOGS="/scratch/al98750/Roux/logs"
+
+ENV="/scratch/al98750/Roux/envs/arcZ_slyA"
+
+THREADS="${SLURM_CPUS_PER_TASK:-4}"
+
+ACCESSION="CP017453.1"
+
+GENOME="$REF/Dsolani_Ds0432_1_CP017453.1.fna"
+
+
+mkdir -p \
+    "$REF" \
+    "$PRIMER" \
+    "$PROBE" \
+    "$RB" \
+    "$RESULTS" \
+    "$TMP" \
+    "$STATE" \
+    "$LOGS"
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "$ENV"
+
+
+echo
+echo "============================================================"
+echo " SlyA -> sol regulatory conservation analysis"
+echo "============================================================"
+echo
+echo "Job ID: ${SLURM_JOB_ID:-interactive}"
+echo "Node: $(hostname)"
+echo "Threads: $THREADS"
+echo "Root: $ROOT"
+echo "Started: $(date)"
+echo
+
+
+for X in python makeblastdb blastn
+do
+    command -v "$X" >/dev/null 2>&1 || {
+        echo "ERROR: required program not found: $X"
+        exit 1
+    }
+
+    echo "FOUND: $X"
+done
+
+
+# ============================================================
+# STEP 01
+# GET D. SOLANI D s0432-1 REFERENCE GENOME
+# ============================================================
+
+if [[ ! -f "$STATE/01_reference_genome.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 01: Obtaining D. solani D s0432-1 genome"
+    echo "============================================================"
+    echo
+
+
+    if [[ -s "$GENOME" ]]
+    then
+
+        echo "Reference genome already exists:"
+        echo "$GENOME"
+
+    else
+
+        echo "Downloading $ACCESSION from NCBI..."
+
+        URL="https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id=${ACCESSION}&rettype=fasta&retmode=text"
+
+
+        if command -v curl >/dev/null 2>&1
+        then
+
+            curl \
+                -L \
+                --fail \
+                --retry 3 \
+                "$URL" \
+                -o "$GENOME"
+
+        elif command -v wget >/dev/null 2>&1
+        then
+
+            wget \
+                -O "$GENOME" \
+                "$URL"
+
+        else
+
+            echo "ERROR:"
+            echo "Neither curl nor wget is available."
+            exit 1
+
+        fi
+
+    fi
+
+
+    # --------------------------------------------------------
+    # Basic QC
+    # --------------------------------------------------------
+
+    if [[ ! -s "$GENOME" ]]
+    then
+        echo "ERROR: genome download failed."
+        exit 1
+    fi
+
+
+    if ! grep -q '^>' "$GENOME"
+    then
+        echo "ERROR: downloaded file is not FASTA."
+        exit 1
+    fi
+
+
+    GENOME_LENGTH=$(
+        grep -v '^>' "$GENOME" \
+        | tr -d '\n\r ' \
+        | wc -c
+    )
+
+
+    echo
+    echo "Genome length:"
+    echo "$GENOME_LENGTH bp"
+
+
+    if [[ "$GENOME_LENGTH" -lt 4000000 ]]
+    then
+
+        echo "ERROR:"
+        echo "Genome is unexpectedly short."
+        echo "Expected approximately 4.9 Mb."
+
+        exit 1
+    fi
+
+
+    echo
+    echo "Genome FASTA:"
+    echo "$GENOME"
+
+
+    date > "$STATE/01_reference_genome.done"
+
+else
+
+    echo
+    echo ">>> STEP 01 already completed — skipping"
+
+fi
+
+
+# ============================================================
+# STEP 02
+# CREATE EXACT EMSA PRIMER FILE
+# ============================================================
+
+if [[ ! -f "$STATE/02_EMSA_primers.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 02: Preparing experimental Psol EMSA primers"
+    echo "============================================================"
+    echo
+
+
+    cat > "$PRIMER/Psol_EMSA_primers.fna" <<'EOF'
+>L2256_FAM
+GAATTGTTTGGCGCGGATATG
+>L2257
+CACAATTTACGATATAACCAGAATGAAAAATC
+EOF
+
+
+    echo "Primer sequences:"
+    cat "$PRIMER/Psol_EMSA_primers.fna"
+
+
+    date > "$STATE/02_EMSA_primers.done"
+
+else
+
+    echo
+    echo ">>> STEP 02 already completed — skipping"
+
+fi
+
+
+# ============================================================
+# STEP 03
+# MAP EMSA PRIMERS TO D. SOLANI D s0432-1
+# ============================================================
+
+if [[ ! -f "$STATE/03_map_EMSA_primers.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 03: Mapping Psol EMSA primers"
+    echo "============================================================"
+    echo
+
+
+    DB="$TMP/Ds0432_db"
+
+    makeblastdb \
+        -in "$GENOME" \
+        -dbtype nucl \
+        -out "$DB" \
+        > "$TMP/makeblastdb.log"
+
+
+    blastn \
+        -task blastn-short \
+        -query "$PRIMER/Psol_EMSA_primers.fna" \
+        -db "$DB" \
+        -strand both \
+        -evalue 1000 \
+        -word_size 7 \
+        -dust no \
+        -num_threads "$THREADS" \
+        -outfmt \
+'6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send sstrand evalue bitscore qseq sseq' \
+        > "$PRIMER/Psol_EMSA_primer_hits.tsv"
+
+
+    echo
+    echo "Primer BLAST hits:"
+    echo
+
+    column -t -s $'\t' \
+        "$PRIMER/Psol_EMSA_primer_hits.tsv"
+
+
+    if [[ ! -s "$PRIMER/Psol_EMSA_primer_hits.tsv" ]]
+    then
+
+        echo "ERROR:"
+        echo "No primer matches found."
+
+        exit 1
+    fi
+
+
+    date > "$STATE/03_map_EMSA_primers.done"
+
+else
+
+    echo
+    echo ">>> STEP 03 already completed — skipping"
+
+fi
+
+
+# ============================================================
+# STEP 04
+# IDENTIFY THE PCR PRIMER PAIR AND EXTRACT EXACT EMSA PROBE
+# ============================================================
+
+if [[ ! -f "$STATE/04_extract_EMSA_probe.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 04: Reconstructing exact experimental Psol EMSA probe"
+    echo "============================================================"
+    echo
+
+
+    python - \
+        "$GENOME" \
+        "$PRIMER/Psol_EMSA_primer_hits.tsv" \
+        "$PROBE/Psol_EMSA_probe.fna" \
+        "$PROBE/Psol_EMSA_probe_coordinates.tsv" <<'PY'
+
+import sys
+from pathlib import Path
+
+
+genome_file = Path(sys.argv[1])
+hits_file = Path(sys.argv[2])
+fasta_out = Path(sys.argv[3])
+coord_out = Path(sys.argv[4])
+
+
+# ============================================================
+# FUNCTIONS
+# ============================================================
+
+def read_fasta(path):
+
+    records = {}
+
+    name = None
+    seq = []
+
+    for line in path.read_text().splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith(">"):
+
+            if name is not None:
+                records[name] = "".join(seq).upper()
+
+            name = line[1:].split()[0]
+            seq = []
+
+        else:
+            seq.append(line)
+
+    if name is not None:
+        records[name] = "".join(seq).upper()
+
+    return records
+
+
+def rc(seq):
+
+    return seq.translate(
+        str.maketrans(
+            "ACGTN",
+            "TGCAN"
+        )
+    )[::-1]
+
+
+# ============================================================
+# READ GENOME
+# ============================================================
+
+genome = read_fasta(genome_file)
+
+
+# ============================================================
+# READ BLAST HITS
+# ============================================================
+
+hits = []
+
+
+with open(hits_file) as fh:
+
+    for line in fh:
+
+        p = line.rstrip().split("\t")
+
+        if len(p) < 15:
+            continue
+
+        hits.append({
+            "primer": p[0],
+            "contig": p[1],
+            "pident": float(p[2]),
+            "length": int(p[3]),
+            "mismatch": int(p[4]),
+            "qstart": int(p[6]),
+            "qend": int(p[7]),
+            "sstart": int(p[8]),
+            "send": int(p[9]),
+            "strand": p[10],
+            "bitscore": float(p[12])
+        })
+
+
+p1 = [
+    h for h in hits
+    if h["primer"] == "L2256_FAM"
+]
+
+p2 = [
+    h for h in hits
+    if h["primer"] == "L2257"
+]
+
+
+if not p1 or not p2:
+
+    raise RuntimeError(
+        "Could not identify both EMSA primers."
+    )
+
+
+# ============================================================
+# IDENTIFY FACING PRIMER PAIR
+#
+# Expected PCR product is approximately 150 bp.
+#
+# We allow 80-300 bp initially, then choose:
+#
+# 1. primers on opposite strands
+# 2. facing one another
+# 3. best sequence match
+# 4. product length closest to 150 bp
+# ============================================================
+
+candidates = []
+
+
+for a in p1:
+
+    for b in p2:
+
+        if a["contig"] != b["contig"]:
+            continue
+
+        if a["strand"] == b["strand"]:
+            continue
+
+
+        a_lo = min(a["sstart"], a["send"])
+        a_hi = max(a["sstart"], a["send"])
+
+        b_lo = min(b["sstart"], b["send"])
+        b_hi = max(b["sstart"], b["send"])
+
+
+        # ----------------------------------------------------
+        # Determine whether primers face each other
+        # ----------------------------------------------------
+
+        facing = False
+        orientation = None
+
+
+        if (
+            a["strand"] == "plus"
+            and b["strand"] == "minus"
+            and a_lo < b_hi
+        ):
+
+            facing = True
+            orientation = "+"
+
+
+        elif (
+            a["strand"] == "minus"
+            and b["strand"] == "plus"
+            and b_lo < a_hi
+        ):
+
+            facing = True
+            orientation = "-"
+
+
+        if not facing:
+            continue
+
+
+        left = min(
+            a_lo,
+            b_lo
+        )
+
+        right = max(
+            a_hi,
+            b_hi
+        )
+
+        product_length = (
+            right - left + 1
+        )
+
+
+        if not (
+            80 <= product_length <= 300
+        ):
+            continue
+
+
+        combined_match = (
+            a["length"] +
+            b["length"]
+        )
+
+        total_mismatch = (
+            a["mismatch"] +
+            b["mismatch"]
+        )
+
+        total_bitscore = (
+            a["bitscore"] +
+            b["bitscore"]
+        )
+
+
+        # lower tuple = better
+        ranking = (
+            total_mismatch,
+            -combined_match,
+            abs(product_length - 150),
+            -total_bitscore
+        )
+
+
+        candidates.append(
+            (
+                ranking,
+                a,
+                b,
+                left,
+                right,
+                product_length,
+                orientation
+            )
+        )
+
+
+if not candidates:
+
+    raise RuntimeError(
+        "No plausible facing L2256/L2257 primer pair "
+        "within 80-300 bp was found."
+    )
+
+
+candidates.sort(
+    key=lambda x: x[0]
+)
+
+
+(
+    ranking,
+    a,
+    b,
+    left,
+    right,
+    product_length,
+    orientation
+) = candidates[0]
+
+
+contig = a["contig"]
+
+
+if contig not in genome:
+
+    raise RuntimeError(
+        f"Contig {contig} missing from FASTA."
+    )
+
+
+# genomic interval
+seq = genome[contig][
+    left - 1:right
+]
+
+
+# orient sequence in the L2256 -> L2257 PCR direction
+if orientation == "-":
+    seq = rc(seq)
+
+
+# ============================================================
+# REPORT
+# ============================================================
+
+print()
+print("Selected experimental EMSA primer pair")
+print("---------------------------------------")
+
+print(
+    "L2256:",
+    a["contig"],
+    a["sstart"],
+    a["send"],
+    a["strand"]
+)
+
+print(
+    "L2257:",
+    b["contig"],
+    b["sstart"],
+    b["send"],
+    b["strand"]
+)
+
+print()
+print(
+    "Amplicon genomic interval:",
+    f"{contig}:{left}-{right}"
+)
+
+print(
+    "Amplicon orientation:",
+    orientation
+)
+
+print(
+    "Amplicon length:",
+    product_length,
+    "bp"
+)
+
+print()
+print("Amplicon sequence:")
+print(seq)
+
+
+# ============================================================
+# WRITE FASTA
+# ============================================================
+
+with open(
+    fasta_out,
+    "w"
+) as out:
+
+    out.write(
+        f">Dsolani_Ds0432_1_Psol_EMSA"
+        f"|{contig}:{left}-{right}"
+        f"|orientation={orientation}"
+        f"|length={product_length}\n"
+    )
+
+    for i in range(
+        0,
+        len(seq),
+        70
+    ):
+
+        out.write(
+            seq[i:i+70] + "\n"
+        )
+
+
+# ============================================================
+# WRITE COORDINATES
+# ============================================================
+
+with open(
+    coord_out,
+    "w"
+) as out:
+
+    out.write(
+        "reference\tcontig\t"
+        "amplicon_start\tamplicon_end\t"
+        "orientation\tamplicon_length\t"
+        "L2256_sstart\tL2256_send\tL2256_strand\t"
+        "L2257_sstart\tL2257_send\tL2257_strand\n"
+    )
+
+    out.write(
+        "Dsolani_Ds0432_1\t"
+        f"{contig}\t"
+        f"{left}\t"
+        f"{right}\t"
+        f"{orientation}\t"
+        f"{product_length}\t"
+        f"{a['sstart']}\t"
+        f"{a['send']}\t"
+        f"{a['strand']}\t"
+        f"{b['sstart']}\t"
+        f"{b['send']}\t"
+        f"{b['strand']}\n"
+    )
+
+
+print()
+print("Written:")
+print(fasta_out)
+print(coord_out)
+
+PY
+
+
+    date > "$STATE/04_extract_EMSA_probe.done"
+
+else
+
+    echo
+    echo ">>> STEP 04 already completed — skipping"
+
+fi
+
+
+# ============================================================
+# STEP 05
+# FUTURE: LOCATE PsolA RELATIVE TO solA
+#
+# We will add code here AFTER confirming the exact EMSA probe.
+# ============================================================
+
+if [[ ! -f "$STATE/05_locate_relative_to_solA.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 05: solA-relative coordinates"
+    echo "============================================================"
+    echo
+
+    echo "STEP 05 not implemented yet."
+    echo "Waiting until exact EMSA fragment is verified."
+
+    # --------------------------------------------------------
+    # ADD FUTURE CODE HERE
+    # --------------------------------------------------------
+    #
+    # DO NOT create the checkpoint yet.
+    #
+    # When this step is implemented successfully, add:
+    #
+    # date > "$STATE/05_locate_relative_to_solA.done"
+    #
+    # --------------------------------------------------------
+
+else
+
+    echo
+    echo ">>> STEP 05 already completed — skipping"
+
+fi
+
+
+# ============================================================
+# STEP 06
+# FUTURE: FIND HOMOLOGOUS Psol REGION IN R. BADENSIS
+# ============================================================
+
+if [[ ! -f "$STATE/06_Rouxiella_Psol_homology.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 06: Rouxiella Psol comparison"
+    echo "============================================================"
+    echo
+
+    echo "STEP 06 not implemented yet."
+
+    # Future:
+    #
+    # - use exact D. solani EMSA probe
+    # - locate homologous region around solA in 20GA0316
+    # - repeat across 17 R. badensis genomes
+    # - calculate identity / coverage
+    #
+    # DO NOT touch checkpoint until implemented.
+
+else
+
+    echo
+    echo ">>> STEP 06 already completed — skipping"
+
+fi
+
+
+# ============================================================
+# CURRENT OUTPUT SUMMARY
+# ============================================================
+
+echo
+echo "============================================================"
+echo " CURRENT ANALYSIS COMPLETE"
+echo "============================================================"
+echo
+
+echo "Reference genome:"
+echo "$GENOME"
+
+echo
+echo "Primer hits:"
+echo "$PRIMER/Psol_EMSA_primer_hits.tsv"
+
+echo
+echo "Exact experimental EMSA probe:"
+echo "$PROBE/Psol_EMSA_probe.fna"
+
+echo
+echo "Probe coordinates:"
+echo "$PROBE/Psol_EMSA_probe_coordinates.tsv"
+
+echo
+echo "Finished: $(date)"
