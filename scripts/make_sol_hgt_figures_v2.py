@@ -133,6 +133,69 @@ def leaves(tree) -> list[str]:
     return [clade.name for clade in tree.get_terminals()]
 
 
+def taxon_key(name: str) -> str:
+    """Match accession IDs across IQ-TREE runs, ignoring accession versions."""
+    m = re.search(r'(?:GCA|GCF)_\d+', name)
+    return m.group(0) if m else name
+
+
+def match_species_to_sol_taxa(trees: dict[str, object], out: Path) -> int:
+    """Restrict the existing species tree to the 23 sol taxa; never re-infer it.
+
+    The original core tree can have additional genomes (e.g. 32). Those tips
+    must be removed ONLY from the display copy to make an apples-to-apples
+    comparison. Original trees on disk are never changed.
+    """
+    canonical_names = leaves(trees['unpartitioned_11'])
+    keys = [taxon_key(name) for name in canonical_names]
+    if len(keys) != 23 or len(set(keys)) != 23:
+        raise ValueError('11-gene tree must contain 23 uniquely identifiable accessions; '
+                         f'found {len(keys)} tips and {len(set(keys))} unique accession IDs')
+    canonical = dict(zip(keys, canonical_names))
+
+    # Harmonize labels across the three sol trees, if version suffixes differ.
+    for label in ('unpartitioned_11', 'partitioned_11', 'no_solA_10'):
+        tree = trees[label]
+        terms = tree.get_terminals()
+        found = [taxon_key(t.name) for t in terms]
+        if len(found) != len(set(found)) or set(found) != set(canonical):
+            raise ValueError(f'{label}: genome accession mismatch with 11-gene tree; '
+                             f'missing={sorted(set(canonical)-set(found))}; '
+                             f'extra={sorted(set(found)-set(canonical))}')
+        for tip in terms:
+            tip.name = canonical[taxon_key(tip.name)]
+
+    species = trees['species_core']
+    full_terms = species.get_terminals()
+    full_n = len(full_terms)
+    full_keys = [taxon_key(t.name) for t in full_terms]
+    if len(full_keys) != len(set(full_keys)):
+        raise ValueError('Species tree has duplicate accession IDs; cannot safely prune. '
+                         'Please inspect species_core.treefile tip labels.')
+    missing = sorted(set(canonical) - set(full_keys))
+    if missing:
+        raise ValueError(f'Species tree has {full_n} taxa but is missing {len(missing)} '
+                         f'of the 23 sol genomes: {missing}. Do not force a tree comparison. '
+                         'Please send the species and sol taxon lists.')
+    extras = [t for t in full_terms if taxon_key(t.name) not in canonical]
+    if extras:
+        print(f'  Species tree contains {full_n} taxa; pruning {len(extras)} additional '
+              'genomes for the matched 23-genome display (no tree re-inference).')
+    # Record every excluded tip to make the displayed pruning auditable.
+    with (out / 'species_tree_pruning_report.tsv').open('w', newline='') as f:
+        writer = csv.writer(f, delimiter='\t')
+        writer.writerow(['source_tree_taxa', 'display_tree_taxa', 'excluded_taxon'])
+        for tip in extras:
+            writer.writerow([full_n, 23, tip.name])
+        if not extras:
+            writer.writerow([full_n, 23, 'none'])
+    for tip in extras:
+        species.prune(tip)
+    for tip in species.get_terminals():
+        tip.name = canonical[taxon_key(tip.name)]
+    return full_n
+
+
 def validate_taxa(trees: dict[str, object]):
     baseline = None
     for label, tree in trees.items():
@@ -226,17 +289,17 @@ def draw_cladogram(ax, source_tree, title, highlight_groups, support=None, font_
     ax.set_title(f'{title}\n{suffix}', loc='left', fontsize=12, fontweight='bold', pad=13)
 
 
-def figure1(species_tree, sol_tree, out):
+def figure1(species_tree, sol_tree, out, species_original_taxa):
     species_support = split_support(species_tree, focal_set(species_tree, 'RB', 'RC'))
     sol_support = split_support(sol_tree, focal_set(sol_tree, 'RB', 'PA'))
     fig, axes = plt.subplots(1, 2, figsize=(21, 10.5), gridspec_kw={'wspace': 0.22})
-    draw_cladogram(axes[0], species_tree, 'A   Core-genome species phylogeny (Rb + Rc)', ('RB', 'RC'), species_support)
+    draw_cladogram(axes[0], species_tree, f'A   Core-genome species phylogeny ({species_original_taxa} to 23 taxa)', ('RB', 'RC'), species_support)
     draw_cladogram(axes[1], sol_tree, 'B   Partitioned 11-gene sol phylogeny (Rb + Pa)', ('RB', 'PA'), sol_support)
     handles = [Line2D([0], [0], marker='o', markersize=8, linestyle='', color=COLORS[g], label=GROUP_LABELS[g])
                for g in ['RB', 'RC', 'PA', 'ER', 'DS']]
     fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, 0.045), ncol=5, frameon=False, fontsize=9)
     fig.text(0.5, 0.015,
-             '23 genomes | Cladograms: branch lengths not to scale | Rooted on D. solani for visualization only (not an inferred outgroup).',
+             f'23 matched genomes | Species tree pruned from {species_original_taxa} tips (not re-inferred) | Cladograms not to scale | Display-rooted on D. solani.',
              ha='center', fontsize=9, color='#525b65')
     fig.subplots_adjust(bottom=0.12, top=0.89, left=0.03, right=0.97)
     save_figure(fig, out, 'Figure1_species_vs_partitioned_sol_tree')
@@ -376,11 +439,12 @@ def main():
         }
         trees = {name: Phylo.read(path, 'newick') for name, path in tree_files.items()}
         print('Validating taxon labels and group membership...')
+        species_original_taxa = match_species_to_sol_taxa(trees, out)
         validate_taxa(trees)
         original_row['RB_PA_bootstrap'] = str(split_support(trees['unpartitioned_11'], focal_set(trees['unpartitioned_11'], 'RB', 'PA')) or 'absent')
         original_row['RB_RC_bootstrap'] = str(split_support(trees['unpartitioned_11'], focal_set(trees['unpartitioned_11'], 'RB', 'RC')) or 'absent')
         print('Creating Figure 1 (species vs partitioned sol trees)...')
-        species_support, sol_support = figure1(trees['species_core'], trees['partitioned_11'], out)
+        species_support, sol_support = figure1(trees['species_core'], trees['partitioned_11'], out, species_original_taxa)
         print(f'  Core species Rb+Rc split UFBoot: {species_support}')
         print(f'  Partitioned sol Rb+Pantoea split UFBoot: {sol_support}')
         supplementary_tree_triptych({
@@ -407,7 +471,10 @@ def main():
         write_table(out / f'Table2_targeted_AU_robustness.{ext}', rows, table2_cols, sep)
     readme = (
         'SOL HGT MANUSCRIPT FIGURES\n\n'
-        'Figure1_species_vs_partitioned_sol_tree: Species-core versus partitioned 11-gene sol tree.\n'
+        'Figure1_species_vs_partitioned_sol_tree: Core-genome species tree pruned to 23 shared taxa versus partitioned 11-gene sol tree.\n'
+        '  The species tree was originally inferred with more taxa; its tree topology was not re-inferred.\n'
+        '  Node support on the pruned species tree is inherited from the original full-taxon tree.\n'
+        '  See species_tree_pruning_report.tsv for excluded taxa.\n'
         '  Visual root placed on Dickeya solani, not inferred to be a biological outgroup.\n'
         '  Cladogram branches are NOT proportional to evolutionary distances.\n'
         'Figure2_individual_gene_support: UFBoot support for the RB+Pantoea split and alignment lengths.\n'
@@ -418,6 +485,7 @@ def main():
         'NOTE: Absence of a recovered split does not mean bootstrap = 0.\n'
         'NOTE: The linked sol genes are not independent transfer events.\n'
         'NOTE: Verify inferred topology constraints and sample identity before submission.\n'
+        'NOTE: Do not interpret the pruned species tree as a newly inferred 23-taxon tree.\n'
     )
     (out / 'README_figures.txt').write_text(readme)
     print(f'\nFinished. Output: {out}')
