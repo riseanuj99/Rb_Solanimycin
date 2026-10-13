@@ -3176,3 +3176,568 @@ else
     echo ">>> STEP 08 already completed — skipping"
 
 fi
+
+
+
+# ============================================================
+# STEP 09
+# SLIDING-WINDOW SEARCH OF R. badensis PsolA
+#
+# Question:
+# Is there another 150-bp region within -600..-1 that resembles
+# the experimentally SlyA-bound D. solani PsolA fragment better
+# than the position-equivalent -436..-287 interval?
+#
+# All Rouxiella upstream sequences are already oriented:
+#
+#       -600 ......................... -1 | solA
+# ============================================================
+
+if [[ ! -f "$STATE/09_Psol_sliding_window.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 09: PsolA 150-bp sliding-window comparison"
+    echo "============================================================"
+    echo
+
+
+    DS_PROBE="$PROBE/Psol_EMSA_probe.fna"
+
+    RB_UPSTREAM="$RB/Rouxiella_SolA_upstream600.fna"
+
+    SLIDE_RESULTS="$RESULTS/Psol_150bp_sliding_window.tsv"
+
+    BEST_FASTA="$RB/Psol_best_matching_150bp_windows.fna"
+
+
+    python - \
+        "$DS_PROBE" \
+        "$RB_UPSTREAM" \
+        "$SLIDE_RESULTS" \
+        "$BEST_FASTA" <<'PY'
+
+import sys
+import csv
+from pathlib import Path
+
+
+probe_file = Path(sys.argv[1])
+upstream_file = Path(sys.argv[2])
+results_file = Path(sys.argv[3])
+best_fasta = Path(sys.argv[4])
+
+
+UPSTREAM_LENGTH = 600
+WINDOW = 150
+
+# Experimental D. solani interval
+EXP_REL_START = -436
+EXP_REL_END = -287
+
+# In the oriented 600-bp sequence:
+# index 0 = -600
+# index 599 = -1
+
+EXP_START0 = (
+    EXP_REL_START + UPSTREAM_LENGTH
+)
+
+EXP_END0 = (
+    EXP_REL_END + UPSTREAM_LENGTH + 1
+)
+
+
+# ============================================================
+# BIOLOGICAL GROUPS
+# ============================================================
+
+GA_ONION = {
+
+    "GCF_020740205.1": "20GA0206",
+    "GCF_020740305.1": "20GA0316",
+    "GCF_020740185.1": "20GA0366",
+    "GCF_020739655.1": "20GA0383",
+    "GCF_020740225.1": "20GA0386",
+    "GCF_020739645.1": "21GA0654"
+
+}
+
+
+COMPARATORS = {
+
+    "GCF_020740165.1": "Rb14-3",
+    "GCF_002093665.1": "DSM100043",
+    "GCF_011067265.1": "SER3"
+
+}
+
+
+# ============================================================
+# FASTA READER
+# ============================================================
+
+def read_fasta(path):
+
+    records = {}
+
+    header = None
+    seq = []
+
+
+    for line in path.read_text().splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+
+        if line.startswith(">"):
+
+            if header is not None:
+                records[header] = "".join(seq).upper()
+
+            header = line[1:].split()[0]
+            seq = []
+
+        else:
+
+            seq.append(line)
+
+
+    if header is not None:
+        records[header] = "".join(seq).upper()
+
+
+    return records
+
+
+# ============================================================
+# SIMPLE POSITION-BY-POSITION IDENTITY
+#
+# No gaps.
+# No realignment.
+# No MAFFT.
+#
+# This answers:
+#
+# "How many of these 150 nucleotide positions are actually
+# identical?"
+# ============================================================
+
+def raw_identity(a, b):
+
+    if len(a) != len(b):
+
+        raise ValueError(
+            "Sequences must have equal length."
+        )
+
+
+    matches = sum(
+        x == y
+        for x, y in zip(a, b)
+    )
+
+
+    return matches, (
+        100.0 * matches / len(a)
+    )
+
+
+# ============================================================
+# READ EXPERIMENTAL D. SOLANI PROBE
+# ============================================================
+
+probe_records = read_fasta(
+    probe_file
+)
+
+
+if len(probe_records) != 1:
+
+    raise RuntimeError(
+        "Expected exactly one D. solani EMSA probe."
+    )
+
+
+probe = next(
+    iter(probe_records.values())
+)
+
+
+if len(probe) != WINDOW:
+
+    raise RuntimeError(
+        f"D. solani probe length = {len(probe)}; "
+        f"expected {WINDOW}."
+    )
+
+
+# ============================================================
+# READ ROUXIELLA PROMOTERS
+# ============================================================
+
+rb = read_fasta(
+    upstream_file
+)
+
+
+rows = []
+best_records = []
+
+
+for header, promoter in rb.items():
+
+    accession = header.split("|")[0]
+
+
+    if "|" in header:
+        original_label = header.split("|", 1)[1]
+    else:
+        original_label = accession
+
+
+    if accession in GA_ONION:
+
+        strain = GA_ONION[accession]
+        group = "GA_onion"
+
+    elif accession in COMPARATORS:
+
+        strain = COMPARATORS[accession]
+        group = "R_badensis_comparator"
+
+    else:
+
+        strain = original_label
+        group = "other_R_badensis"
+
+
+    if len(promoter) != UPSTREAM_LENGTH:
+
+        raise RuntimeError(
+            f"{accession}: promoter length "
+            f"{len(promoter)}, expected 600."
+        )
+
+
+    # ========================================================
+    # SAME POSITION AS EXPERIMENTAL D. SOLANI REGION
+    # ========================================================
+
+    positional_seq = promoter[
+        EXP_START0:EXP_END0
+    ]
+
+
+    if len(positional_seq) != WINDOW:
+
+        raise RuntimeError(
+            f"{accession}: positional interval "
+            f"length = {len(positional_seq)}."
+        )
+
+
+    positional_matches, positional_identity = (
+        raw_identity(
+            probe,
+            positional_seq
+        )
+    )
+
+
+    # ========================================================
+    # SLIDE THE 150-bp D. SOLANI PROBE ACROSS THE COMPLETE
+    # 600-bp ROUXIELLA UPSTREAM REGION
+    # ========================================================
+
+    best_matches = -1
+    best_positions = []
+    best_sequences = []
+
+
+    for start0 in range(
+        0,
+        UPSTREAM_LENGTH - WINDOW + 1
+    ):
+
+        window_seq = promoter[
+            start0:start0 + WINDOW
+        ]
+
+
+        matches, pct = raw_identity(
+            probe,
+            window_seq
+        )
+
+
+        if matches > best_matches:
+
+            best_matches = matches
+
+            best_positions = [
+                start0
+            ]
+
+            best_sequences = [
+                window_seq
+            ]
+
+
+        elif matches == best_matches:
+
+            best_positions.append(
+                start0
+            )
+
+            best_sequences.append(
+                window_seq
+            )
+
+
+    best_identity = (
+        100.0 * best_matches / WINDOW
+    )
+
+
+    # Use first best position for reporting;
+    # number of tied positions is also recorded.
+    best_start0 = best_positions[0]
+
+    best_rel_start = (
+        -UPSTREAM_LENGTH
+        + best_start0
+    )
+
+    best_rel_end = (
+        best_rel_start
+        + WINDOW
+        - 1
+    )
+
+
+    shift_from_experimental = (
+        best_rel_start
+        - EXP_REL_START
+    )
+
+
+    improvement = (
+        best_identity
+        - positional_identity
+    )
+
+
+    rows.append({
+
+        "genome":
+            accession,
+
+        "strain":
+            strain,
+
+        "group":
+            group,
+
+        "same_position_rel_start":
+            EXP_REL_START,
+
+        "same_position_rel_end":
+            EXP_REL_END,
+
+        "same_position_matches_of_150":
+            positional_matches,
+
+        "same_position_raw_identity_pct":
+            round(
+                positional_identity,
+                2
+            ),
+
+        "best_window_rel_start":
+            best_rel_start,
+
+        "best_window_rel_end":
+            best_rel_end,
+
+        "best_window_matches_of_150":
+            best_matches,
+
+        "best_window_raw_identity_pct":
+            round(
+                best_identity,
+                2
+            ),
+
+        "improvement_over_same_position_pct_points":
+            round(
+                improvement,
+                2
+            ),
+
+        "shift_from_minus436_bp":
+            shift_from_experimental,
+
+        "number_of_tied_best_windows":
+            len(best_positions),
+
+        "same_position_sequence":
+            positional_seq,
+
+        "best_window_sequence":
+            best_sequences[0]
+
+    })
+
+
+    best_records.append(
+        (
+            accession,
+            strain,
+            best_rel_start,
+            best_rel_end,
+            best_sequences[0]
+        )
+    )
+
+
+# ============================================================
+# SORT OUTPUT
+# ============================================================
+
+group_order = {
+
+    "GA_onion": 0,
+    "R_badensis_comparator": 1,
+    "other_R_badensis": 2
+
+}
+
+
+rows.sort(
+    key=lambda r: (
+        group_order.get(
+            r["group"],
+            99
+        ),
+        r["strain"]
+    )
+)
+
+
+# ============================================================
+# WRITE TABLE
+# ============================================================
+
+fields = [
+
+    "genome",
+    "strain",
+    "group",
+
+    "same_position_rel_start",
+    "same_position_rel_end",
+
+    "same_position_matches_of_150",
+    "same_position_raw_identity_pct",
+
+    "best_window_rel_start",
+    "best_window_rel_end",
+
+    "best_window_matches_of_150",
+    "best_window_raw_identity_pct",
+
+    "improvement_over_same_position_pct_points",
+
+    "shift_from_minus436_bp",
+
+    "number_of_tied_best_windows",
+
+    "same_position_sequence",
+    "best_window_sequence"
+
+]
+
+
+with open(
+    results_file,
+    "w",
+    newline=""
+) as out:
+
+    writer = csv.DictWriter(
+        out,
+        delimiter="\t",
+        fieldnames=fields
+    )
+
+    writer.writeheader()
+    writer.writerows(rows)
+
+
+# ============================================================
+# WRITE BEST WINDOWS FASTA
+# ============================================================
+
+with open(
+    best_fasta,
+    "w"
+) as out:
+
+    out.write(
+        ">Dsolani_Ds0432_1|experimental_EMSA_probe|-436_-287\n"
+    )
+
+    out.write(
+        probe + "\n"
+    )
+
+
+    for (
+        accession,
+        strain,
+        rel_start,
+        rel_end,
+        seq
+    ) in best_records:
+
+        out.write(
+            f">{accession}|{strain}|"
+            f"{rel_start}_{rel_end}\n"
+        )
+
+        out.write(
+            seq + "\n"
+        )
+
+
+print()
+print("Written:")
+print(results_file)
+print(best_fasta)
+
+PY
+
+
+    echo
+    echo "============================================================"
+    echo "PsolA sliding-window results"
+    echo "============================================================"
+    echo
+
+    column -t -s $'\t' \
+        "$SLIDE_RESULTS"
+
+
+    date > "$STATE/09_Psol_sliding_window.done"
+
+else
+
+    echo
+    echo ">>> STEP 09 already completed — skipping"
+
+fi
