@@ -3741,3 +3741,703 @@ else
     echo ">>> STEP 09 already completed — skipping"
 
 fi
+
+
+# ============================================================
+# STEP 10
+# EMPIRICAL RANDOMIZATION TEST FOR THE -225..-76 MATCH
+#
+# Question:
+# Is the observed best match between the D. solani EMSA probe
+# and the 20GA0316 promoter stronger than expected simply from
+# nucleotide composition?
+#
+# Null model:
+#   Shuffle the 150-bp D. solani probe while preserving its
+#   exact A/C/G/T composition.
+#
+# For every shuffled probe:
+#   scan all 451 possible 150-bp windows across the
+#   20GA0316 -600..-1 promoter
+#   and record the BEST identity.
+#
+# Observed:
+#   60 / 150 matches = 40%
+#   at -225..-76
+# ============================================================
+
+if [[ ! -f "$STATE/10_Psol_randomization.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 10: Empirical randomization test"
+    echo "============================================================"
+    echo
+
+
+    DS_PROBE="$PROBE/Psol_EMSA_probe.fna"
+
+    RB_UPSTREAM="$RB/Rouxiella_SolA_upstream600.fna"
+
+    RANDOM_SUMMARY="$RESULTS/Psol_20GA0316_randomization_summary.tsv"
+
+    RANDOM_DIST="$RESULTS/Psol_20GA0316_randomization_distribution.tsv"
+
+
+    python - \
+        "$DS_PROBE" \
+        "$RB_UPSTREAM" \
+        "$RANDOM_SUMMARY" \
+        "$RANDOM_DIST" <<'PY'
+
+import sys
+import csv
+import random
+import statistics
+from pathlib import Path
+
+
+probe_file = Path(sys.argv[1])
+promoter_file = Path(sys.argv[2])
+summary_file = Path(sys.argv[3])
+distribution_file = Path(sys.argv[4])
+
+
+FOCAL_ACCESSION = "GCF_020740305.1"
+
+N_PERMUTATIONS = 10000
+
+SEED = 20261013
+
+WINDOW = 150
+PROMOTER_LENGTH = 600
+
+
+# ============================================================
+# FASTA READER
+# ============================================================
+
+def read_fasta(path):
+
+    records = {}
+
+    header = None
+    seq = []
+
+
+    for line in path.read_text().splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+
+        if line.startswith(">"):
+
+            if header is not None:
+                records[header] = "".join(seq).upper()
+
+            header = line[1:].split()[0]
+            seq = []
+
+        else:
+
+            seq.append(line)
+
+
+    if header is not None:
+        records[header] = "".join(seq).upper()
+
+
+    return records
+
+
+# ============================================================
+# RAW POSITION-BY-POSITION MATCHES
+# ============================================================
+
+def matches(a, b):
+
+    return sum(
+        x == y
+        for x, y in zip(a, b)
+    )
+
+
+# ============================================================
+# SCAN ONE 150-bp QUERY ACROSS ENTIRE 600-bp PROMOTER
+# ============================================================
+
+def scan_promoter(query, promoter):
+
+    best_matches = -1
+    best_start = None
+
+
+    for start0 in range(
+        0,
+        len(promoter) - len(query) + 1
+    ):
+
+        window = promoter[
+            start0:start0 + len(query)
+        ]
+
+
+        m = matches(
+            query,
+            window
+        )
+
+
+        if m > best_matches:
+
+            best_matches = m
+            best_start = start0
+
+
+    return (
+        best_matches,
+        best_start
+    )
+
+
+# ============================================================
+# READ REAL D. SOLANI EMSA PROBE
+# ============================================================
+
+probe_records = read_fasta(
+    probe_file
+)
+
+
+if len(probe_records) != 1:
+
+    raise RuntimeError(
+        "Expected exactly one D. solani EMSA probe."
+    )
+
+
+probe = next(
+    iter(probe_records.values())
+)
+
+
+if len(probe) != WINDOW:
+
+    raise RuntimeError(
+        f"Probe length = {len(probe)}, expected {WINDOW}."
+    )
+
+
+# ============================================================
+# READ 20GA0316 PROMOTER
+# ============================================================
+
+promoters = read_fasta(
+    promoter_file
+)
+
+
+focal_header = None
+
+
+for header in promoters:
+
+    if header.split("|")[0] == FOCAL_ACCESSION:
+
+        focal_header = header
+        break
+
+
+if focal_header is None:
+
+    raise RuntimeError(
+        f"Could not find {FOCAL_ACCESSION}"
+    )
+
+
+promoter = promoters[
+    focal_header
+]
+
+
+if len(promoter) != PROMOTER_LENGTH:
+
+    raise RuntimeError(
+        f"20GA0316 promoter length = {len(promoter)}, "
+        f"expected {PROMOTER_LENGTH}."
+    )
+
+
+# ============================================================
+# OBSERVED REAL-PROBE RESULT
+# ============================================================
+
+observed_matches, observed_start0 = (
+    scan_promoter(
+        probe,
+        promoter
+    )
+)
+
+
+observed_identity = (
+    100.0
+    * observed_matches
+    / WINDOW
+)
+
+
+observed_rel_start = (
+    -PROMOTER_LENGTH
+    + observed_start0
+)
+
+observed_rel_end = (
+    observed_rel_start
+    + WINDOW
+    - 1
+)
+
+
+print()
+print("Observed real-probe result:")
+print(
+    observed_matches,
+    "/",
+    WINDOW,
+    "=",
+    round(observed_identity, 2),
+    "%"
+)
+
+print(
+    "Best window:",
+    observed_rel_start,
+    "to",
+    observed_rel_end
+)
+
+
+# ============================================================
+# NUCLEOTIDE COMPOSITION
+# ============================================================
+
+composition = {
+
+    nt: probe.count(nt)
+
+    for nt in "ACGT"
+
+}
+
+
+print()
+print("D. solani EMSA probe composition:")
+
+for nt in "ACGT":
+
+    print(
+        nt,
+        composition[nt]
+    )
+
+
+# ============================================================
+# RANDOMIZATION
+# ============================================================
+
+random.seed(
+    SEED
+)
+
+
+probe_list = list(
+    probe
+)
+
+
+distribution = []
+
+n_equal_or_better = 0
+
+
+for i in range(
+    1,
+    N_PERMUTATIONS + 1
+):
+
+    shuffled = probe_list.copy()
+
+    random.shuffle(
+        shuffled
+    )
+
+
+    shuffled = "".join(
+        shuffled
+    )
+
+
+    best_matches, best_start0 = (
+        scan_promoter(
+            shuffled,
+            promoter
+        )
+    )
+
+
+    best_identity = (
+        100.0
+        * best_matches
+        / WINDOW
+    )
+
+
+    rel_start = (
+        -PROMOTER_LENGTH
+        + best_start0
+    )
+
+    rel_end = (
+        rel_start
+        + WINDOW
+        - 1
+    )
+
+
+    if best_matches >= observed_matches:
+
+        n_equal_or_better += 1
+
+
+    distribution.append({
+
+        "permutation":
+            i,
+
+        "best_matches_of_150":
+            best_matches,
+
+        "best_identity_pct":
+            round(
+                best_identity,
+                2
+            ),
+
+        "best_window_rel_start":
+            rel_start,
+
+        "best_window_rel_end":
+            rel_end
+
+    })
+
+
+# ============================================================
+# EMPIRICAL P-VALUE
+#
+# +1 correction prevents p = 0.
+# ============================================================
+
+empirical_p = (
+
+    n_equal_or_better + 1
+
+) / (
+
+    N_PERMUTATIONS + 1
+
+)
+
+
+# ============================================================
+# NULL DISTRIBUTION SUMMARIES
+# ============================================================
+
+null_matches = [
+
+    x["best_matches_of_150"]
+
+    for x in distribution
+
+]
+
+
+null_sorted = sorted(
+    null_matches
+)
+
+
+def percentile(values, p):
+
+    index = int(
+        round(
+            (len(values) - 1)
+            * p
+        )
+    )
+
+    return values[index]
+
+
+null_mean = statistics.mean(
+    null_matches
+)
+
+null_median = statistics.median(
+    null_matches
+)
+
+q95 = percentile(
+    null_sorted,
+    0.95
+)
+
+q99 = percentile(
+    null_sorted,
+    0.99
+)
+
+q999 = percentile(
+    null_sorted,
+    0.999
+)
+
+
+# ============================================================
+# INTERPRETATION LABEL
+# ============================================================
+
+if empirical_p < 0.001:
+
+    interpretation = (
+        "stronger_than_composition_null"
+    )
+
+elif empirical_p < 0.05:
+
+    interpretation = (
+        "significant_but_modest"
+    )
+
+else:
+
+    interpretation = (
+        "not_unusual_under_composition_null"
+    )
+
+
+# ============================================================
+# WRITE DISTRIBUTION
+# ============================================================
+
+with open(
+    distribution_file,
+    "w",
+    newline=""
+) as out:
+
+    fields = [
+
+        "permutation",
+        "best_matches_of_150",
+        "best_identity_pct",
+        "best_window_rel_start",
+        "best_window_rel_end"
+
+    ]
+
+
+    writer = csv.DictWriter(
+        out,
+        delimiter="\t",
+        fieldnames=fields
+    )
+
+    writer.writeheader()
+    writer.writerows(
+        distribution
+    )
+
+
+# ============================================================
+# WRITE SUMMARY
+# ============================================================
+
+summary = {
+
+    "strain":
+        "20GA0316",
+
+    "accession":
+        FOCAL_ACCESSION,
+
+    "permutations":
+        N_PERMUTATIONS,
+
+    "random_seed":
+        SEED,
+
+    "observed_best_matches_of_150":
+        observed_matches,
+
+    "observed_best_identity_pct":
+        round(
+            observed_identity,
+            2
+        ),
+
+    "observed_best_window_rel_start":
+        observed_rel_start,
+
+    "observed_best_window_rel_end":
+        observed_rel_end,
+
+    "null_mean_best_matches":
+        round(
+            null_mean,
+            3
+        ),
+
+    "null_median_best_matches":
+        null_median,
+
+    "null_95th_percentile_matches":
+        q95,
+
+    "null_99th_percentile_matches":
+        q99,
+
+    "null_99.9th_percentile_matches":
+        q999,
+
+    "randomizations_equal_or_better_than_observed":
+        n_equal_or_better,
+
+    "empirical_p_value":
+        empirical_p,
+
+    "interpretation":
+        interpretation,
+
+    "probe_A":
+        composition["A"],
+
+    "probe_C":
+        composition["C"],
+
+    "probe_G":
+        composition["G"],
+
+    "probe_T":
+        composition["T"]
+
+}
+
+
+with open(
+    summary_file,
+    "w",
+    newline=""
+) as out:
+
+    writer = csv.DictWriter(
+        out,
+        delimiter="\t",
+        fieldnames=list(
+            summary.keys()
+        )
+    )
+
+    writer.writeheader()
+    writer.writerow(
+        summary
+    )
+
+
+print()
+print("============================================================")
+print("RANDOMIZATION RESULT")
+print("============================================================")
+
+print(
+    "Observed:",
+    observed_matches,
+    "/150"
+)
+
+print(
+    "Null mean:",
+    round(
+        null_mean,
+        3
+    )
+)
+
+print(
+    "Null median:",
+    null_median
+)
+
+print(
+    "95th percentile:",
+    q95
+)
+
+print(
+    "99th percentile:",
+    q99
+)
+
+print(
+    "99.9th percentile:",
+    q999
+)
+
+print(
+    "Randomizations >= observed:",
+    n_equal_or_better,
+    "/",
+    N_PERMUTATIONS
+)
+
+print(
+    "Empirical p-value:",
+    empirical_p
+)
+
+print(
+    "Interpretation:",
+    interpretation
+)
+
+print()
+print("Written:")
+print(summary_file)
+print(distribution_file)
+
+PY
+
+
+    echo
+    echo "============================================================"
+    echo "20GA0316 PsolA randomization summary"
+    echo "============================================================"
+    echo
+
+    column -t -s $'\t' \
+        "$RANDOM_SUMMARY"
+
+
+    date > "$STATE/10_Psol_randomization.done"
+
+else
+
+    echo
+    echo ">>> STEP 10 already completed — skipping"
+
+fi
