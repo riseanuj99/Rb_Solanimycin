@@ -2375,4 +2375,804 @@ else
 
 fi
 
+# ============================================================
+# STEP 08
+# COMPARE THE POSITION-EQUIVALENT SlyA-BOUND PsolA REGION
+#
+# Experimental D. solani EMSA probe:
+#   relative to SolA ATG = -436 to -287
+#   length = 150 bp
+#
+# Question:
+# What occupies the same SolA-relative position in R. badensis?
+# ============================================================
 
+if [[ ! -f "$STATE/08_Psol_position_equivalent.done" ]]
+then
+
+    echo
+    echo "============================================================"
+    echo "STEP 08: Comparing homologous-position PsolA regions"
+    echo "============================================================"
+    echo
+
+
+    RB_UPSTREAM="$RB/Rouxiella_SolA_upstream600.fna"
+
+    DSOLA_TABLE="$RESULTS/Dsolani_solA_candidate.tsv"
+
+    DS_UPSTREAM="$RB/Dsolani_SolA_upstream600.fna"
+
+    COMBINED_600="$RB/SolA_upstream600_all.fna"
+
+    SITE_FASTA="$RB/Psol_position_equivalent_150bp.fna"
+
+    SITE_ALN="$RB/Psol_position_equivalent_150bp.mafft.fna"
+
+    SITE_RESULTS="$RESULTS/Psol_position_equivalent_conservation.tsv"
+
+
+    # ========================================================
+    # 08A
+    # EXTRACT D. SOLANI 600-bp UPSTREAM REGION
+    # AND THE EXACT -436 TO -287 INTERVAL
+    # ========================================================
+
+    python - \
+        "$GENOME" \
+        "$DSOLA_TABLE" \
+        "$PROBE/Psol_EMSA_probe.fna" \
+        "$RB_UPSTREAM" \
+        "$DS_UPSTREAM" \
+        "$COMBINED_600" \
+        "$SITE_FASTA" <<'PY'
+
+import sys
+import csv
+from pathlib import Path
+
+
+genome_file = Path(sys.argv[1])
+sola_table = Path(sys.argv[2])
+probe_fasta = Path(sys.argv[3])
+rb_upstream_file = Path(sys.argv[4])
+
+ds_upstream_out = Path(sys.argv[5])
+combined_out = Path(sys.argv[6])
+site_out = Path(sys.argv[7])
+
+
+UPSTREAM = 600
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def read_fasta(path):
+
+    records = {}
+
+    name = None
+    seq = []
+
+
+    for line in path.read_text().splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+
+        if line.startswith(">"):
+
+            if name is not None:
+                records[name] = "".join(seq).upper()
+
+            name = line[1:].split()[0]
+            seq = []
+
+        else:
+
+            seq.append(line)
+
+
+    if name is not None:
+        records[name] = "".join(seq).upper()
+
+
+    return records
+
+
+def rc(seq):
+
+    return seq.translate(
+        str.maketrans(
+            "ACGTNacgtn",
+            "TGCANtgcan"
+        )
+    )[::-1]
+
+
+# ============================================================
+# READ D. SOLANI SolA INFORMATION
+# ============================================================
+
+with open(sola_table) as fh:
+
+    solA = next(
+        csv.DictReader(
+            fh,
+            delimiter="\t"
+        )
+    )
+
+
+solA_start = int(
+    solA["solA_start"]
+)
+
+solA_end = int(
+    solA["solA_end"]
+)
+
+strand = solA["strand"]
+
+
+probe_rel_start = int(
+    solA["probe_relative_start_bp"]
+)
+
+probe_rel_end = int(
+    solA["probe_relative_end_bp"]
+)
+
+
+print()
+print("D. solani experimental Psol region:")
+print(
+    f"{probe_rel_start} to "
+    f"{probe_rel_end} relative to SolA ATG"
+)
+
+
+# ============================================================
+# READ D. SOLANI CHROMOSOME
+# ============================================================
+
+genome = read_fasta(
+    genome_file
+)
+
+
+if len(genome) != 1:
+
+    raise RuntimeError(
+        "Expected one D. solani chromosome."
+    )
+
+
+chrom = next(
+    iter(genome.values())
+)
+
+
+# ============================================================
+# EXTRACT 600 bp UPSTREAM
+# ============================================================
+
+if strand in {"+", "+1"}:
+
+    start0 = solA_start - 1
+
+    left0 = start0 - UPSTREAM
+
+    if left0 < 0:
+        raise RuntimeError(
+            "D. solani SolA too close to chromosome start."
+        )
+
+    ds_upstream = chrom[
+        left0:start0
+    ]
+
+
+elif strand in {"-", "-1"}:
+
+    # First nucleotide of minus-strand CDS is genomic solA_end
+
+    left0 = solA_end
+
+    right0 = solA_end + UPSTREAM
+
+    ds_upstream = rc(
+        chrom[
+            left0:right0
+        ]
+    )
+
+
+else:
+
+    raise RuntimeError(
+        f"Unexpected SolA strand: {strand}"
+    )
+
+
+if len(ds_upstream) != 600:
+
+    raise RuntimeError(
+        f"D. solani upstream length = {len(ds_upstream)}, "
+        "expected 600."
+    )
+
+
+# ============================================================
+# CONVERT RELATIVE COORDINATES INTO POSITIONS
+# WITHIN THE 600-bp UPSTREAM SEQUENCE
+#
+# Sequence orientation:
+#
+# position 1                 position 600
+#   -600  .......................  -1
+#                                  | ATG
+#
+# For example:
+#
+# -436 -> sequence position 165
+# -287 -> sequence position 314
+# ============================================================
+
+site_start_1based = (
+    UPSTREAM
+    + probe_rel_start
+    + 1
+)
+
+site_end_1based = (
+    UPSTREAM
+    + probe_rel_end
+    + 1
+)
+
+
+site_start0 = (
+    site_start_1based - 1
+)
+
+site_end0 = (
+    site_end_1based
+)
+
+
+print()
+print(
+    "Equivalent positions inside 600-bp upstream sequence:",
+    f"{site_start_1based}-{site_end_1based}"
+)
+
+
+ds_site = ds_upstream[
+    site_start0:site_end0
+]
+
+
+print(
+    "Extracted D. solani site length:",
+    len(ds_site)
+)
+
+
+if len(ds_site) != 150:
+
+    raise RuntimeError(
+        f"Expected 150 bp, got {len(ds_site)}"
+    )
+
+
+# ============================================================
+# VERIFY AGAINST THE ACTUAL EMSA PCR AMPLICON
+# ============================================================
+
+probe_records = read_fasta(
+    probe_fasta
+)
+
+
+experimental_probe = next(
+    iter(probe_records.values())
+)
+
+
+if ds_site != experimental_probe:
+
+    print()
+    print("ERROR:")
+    print(
+        "The -436/-287 sequence does not exactly match "
+        "the reconstructed EMSA probe."
+    )
+
+    print()
+    print("Extracted:")
+    print(ds_site)
+
+    print()
+    print("Experimental:")
+    print(experimental_probe)
+
+    raise SystemExit(1)
+
+
+print()
+print(
+    "PASS: extracted -436/-287 region exactly matches "
+    "the 150-bp experimental EMSA probe."
+)
+
+
+# ============================================================
+# WRITE D. SOLANI 600 bp
+# ============================================================
+
+with open(
+    ds_upstream_out,
+    "w"
+) as out:
+
+    out.write(
+        ">Dsolani_Ds0432_1|experimental_reference\n"
+    )
+
+    for i in range(
+        0,
+        len(ds_upstream),
+        70
+    ):
+
+        out.write(
+            ds_upstream[i:i+70]
+            + "\n"
+        )
+
+
+# ============================================================
+# READ ROUXIELLA 600-bp UPSTREAM SEQUENCES
+# ============================================================
+
+rb = read_fasta(
+    rb_upstream_file
+)
+
+
+# ============================================================
+# WRITE COMBINED 600-bp FASTA
+# ============================================================
+
+with open(
+    combined_out,
+    "w"
+) as out:
+
+    out.write(
+        ">Dsolani_Ds0432_1|experimental_reference\n"
+        + ds_upstream
+        + "\n"
+    )
+
+    for header, seq in rb.items():
+
+        if len(seq) != 600:
+
+            raise RuntimeError(
+                f"{header}: upstream length "
+                f"{len(seq)}, expected 600."
+            )
+
+        out.write(
+            f">{header}\n{seq}\n"
+        )
+
+
+# ============================================================
+# EXTRACT EXACT POSITION-EQUIVALENT 150-bp REGION
+# FROM EVERY ROUXIELLA UPSTREAM SEQUENCE
+#
+# This is positional homology:
+#
+#       -436 ............... -287
+#
+# relative to each strain's own SolA ATG.
+# ============================================================
+
+with open(
+    site_out,
+    "w"
+) as out:
+
+    out.write(
+        ">Dsolani_Ds0432_1|experimental_reference\n"
+        + ds_site
+        + "\n"
+    )
+
+
+    for header, seq in rb.items():
+
+        site = seq[
+            site_start0:site_end0
+        ]
+
+
+        if len(site) != 150:
+
+            raise RuntimeError(
+                f"{header}: site length "
+                f"{len(site)}, expected 150."
+            )
+
+
+        out.write(
+            f">{header}\n"
+            f"{site}\n"
+        )
+
+
+print()
+print("Written:")
+print(ds_upstream_out)
+print(combined_out)
+print(site_out)
+
+PY
+
+
+    # ========================================================
+    # 08B
+    # ALIGN THE POSITION-EQUIVALENT 150-bp REGIONS
+    # ========================================================
+
+    echo
+    echo "Aligning 150-bp position-equivalent regions..."
+
+
+    mafft \
+        --localpair \
+        --maxiterate 1000 \
+        --thread "$THREADS" \
+        "$SITE_FASTA" \
+        > "$SITE_ALN"
+
+
+    # ========================================================
+    # 08C
+    # CALCULATE CONSERVATION TO D. SOLANI
+    # AND TO THE FOCAL ONION STRAIN 20GA0316
+    # ========================================================
+
+    python - \
+        "$SITE_ALN" \
+        "$SITE_RESULTS" <<'PY'
+
+import sys
+import csv
+from pathlib import Path
+
+
+aln_file = Path(sys.argv[1])
+out_file = Path(sys.argv[2])
+
+
+DS_REF = "Dsolani_Ds0432_1"
+
+RB_REF = "GCF_020740305.1"
+
+
+# ============================================================
+# BIOLOGICAL GROUPS
+# ============================================================
+
+ONION_GA = {
+
+    "GCF_020740205.1": "20GA0206",
+    "GCF_020740305.1": "20GA0316",
+    "GCF_020740185.1": "20GA0366",
+    "GCF_020739655.1": "20GA0383",
+    "GCF_020740225.1": "20GA0386",
+    "GCF_020739645.1": "21GA0654"
+
+}
+
+
+COMPARATORS = {
+
+    "GCF_020740165.1":
+        "Rb14-3",
+
+    "GCF_002093665.1":
+        "DSM100043",
+
+    "GCF_011067265.1":
+        "SER3"
+
+}
+
+
+# ============================================================
+# FASTA READER
+# ============================================================
+
+def read_fasta(path):
+
+    d = {}
+
+    name = None
+    seq = []
+
+
+    for line in path.read_text().splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+
+        if line.startswith(">"):
+
+            if name is not None:
+                d[name] = "".join(seq).upper()
+
+            name = line[1:].split()[0]
+            seq = []
+
+        else:
+
+            seq.append(line)
+
+
+    if name is not None:
+        d[name] = "".join(seq).upper()
+
+
+    return d
+
+
+aln = read_fasta(
+    aln_file
+)
+
+
+# ============================================================
+# IDENTIFY ACCESSION FROM HEADER
+# ============================================================
+
+def accession(header):
+
+    return header.split("|")[0]
+
+
+ds_header = next(
+    h for h in aln
+    if accession(h) == DS_REF
+)
+
+
+rb_header = next(
+    h for h in aln
+    if accession(h) == RB_REF
+)
+
+
+ds = aln[ds_header]
+rb = aln[rb_header]
+
+
+# ============================================================
+# PAIRWISE CONSERVATION FUNCTION
+# ============================================================
+
+def compare(reference, query):
+
+    cols = [
+        i
+        for i, nt in enumerate(reference)
+        if nt != "-"
+    ]
+
+
+    matches = 0
+    nongap = 0
+
+
+    for i in cols:
+
+        q = query[i]
+        r = reference[i]
+
+
+        if q != "-":
+            nongap += 1
+
+
+        if q != "-" and q == r:
+            matches += 1
+
+
+    identity = (
+        100.0 * matches / len(cols)
+    )
+
+    coverage = (
+        100.0 * nongap / len(cols)
+    )
+
+
+    return (
+        identity,
+        coverage
+    )
+
+
+# ============================================================
+# BUILD TABLE
+# ============================================================
+
+rows = []
+
+
+for header, seq in aln.items():
+
+    acc = accession(header)
+
+
+    if acc == DS_REF:
+
+        strain = "D_s0432-1"
+        group = "D_solani_reference"
+
+    elif acc in ONION_GA:
+
+        strain = ONION_GA[acc]
+        group = "GA_onion"
+
+    elif acc in COMPARATORS:
+
+        strain = COMPARATORS[acc]
+        group = "R_badensis_comparator"
+
+    else:
+
+        strain = acc
+        group = "other_R_badensis"
+
+
+    ds_id, ds_cov = compare(
+        ds,
+        seq
+    )
+
+
+    rb_id, rb_cov = compare(
+        rb,
+        seq
+    )
+
+
+    ungapped = seq.replace(
+        "-",
+        ""
+    )
+
+
+    rows.append({
+
+        "genome":
+            acc,
+
+        "strain":
+            strain,
+
+        "group":
+            group,
+
+        "identity_to_Dsolani_EMSA_region_pct":
+            round(ds_id, 2),
+
+        "coverage_vs_Dsolani_EMSA_region_pct":
+            round(ds_cov, 2),
+
+        "identity_to_20GA0316_region_pct":
+            round(rb_id, 2),
+
+        "coverage_vs_20GA0316_region_pct":
+            round(rb_cov, 2),
+
+        "ungapped_length":
+            len(ungapped),
+
+        "position_equivalent_sequence":
+            ungapped
+
+    })
+
+
+# Sort biologically
+group_order = {
+
+    "D_solani_reference": 0,
+    "GA_onion": 1,
+    "R_badensis_comparator": 2,
+    "other_R_badensis": 3
+
+}
+
+
+rows.sort(
+    key=lambda r: (
+        group_order.get(
+            r["group"],
+            99
+        ),
+        r["strain"]
+    )
+)
+
+
+fields = [
+
+    "genome",
+    "strain",
+    "group",
+    "identity_to_Dsolani_EMSA_region_pct",
+    "coverage_vs_Dsolani_EMSA_region_pct",
+    "identity_to_20GA0316_region_pct",
+    "coverage_vs_20GA0316_region_pct",
+    "ungapped_length",
+    "position_equivalent_sequence"
+
+]
+
+
+with open(
+    out_file,
+    "w",
+    newline=""
+) as out:
+
+    writer = csv.DictWriter(
+        out,
+        delimiter="\t",
+        fieldnames=fields
+    )
+
+    writer.writeheader()
+    writer.writerows(rows)
+
+
+print()
+print("Written:")
+print(out_file)
+
+PY
+
+
+    echo
+    echo "============================================================"
+    echo "Psol position-equivalent conservation"
+    echo "============================================================"
+    echo
+
+    column -t -s $'\t' \
+        "$SITE_RESULTS"
+
+
+    date > "$STATE/08_Psol_position_equivalent.done"
+
+else
+
+    echo
+    echo ">>> STEP 08 already completed — skipping"
+
+fi
